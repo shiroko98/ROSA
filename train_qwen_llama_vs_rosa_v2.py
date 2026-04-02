@@ -1,11 +1,14 @@
 
 import argparse
+import glob
+import gzip
 import json
 import math
 import os
 import random
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -92,7 +95,8 @@ def build_tokenizer(name_or_path: Optional[str]):
 
 
 def read_text(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
         return f.read()
 
 
@@ -106,6 +110,160 @@ def split_docs(text: str, split_mode: str) -> List[str]:
     else:
         raise ValueError(f"未知 split_mode: {split_mode}")
     return docs
+
+
+def parse_csv_arg(text: Optional[str]) -> List[str]:
+    if not text:
+        return []
+    return [x.strip() for x in text.split(",") if x.strip()]
+
+
+def has_glob_magic(path_spec: str) -> bool:
+    return any(ch in path_spec for ch in ["*", "?", "["])
+
+
+def resolve_data_files(path_spec: str) -> List[str]:
+    if not path_spec:
+        raise ValueError("数据路径不能为空。")
+
+    if has_glob_magic(path_spec):
+        paths = sorted(glob.glob(path_spec, recursive=True))
+    else:
+        path = Path(path_spec)
+        if path.is_dir():
+            paths = sorted(str(p) for p in path.rglob("*") if p.is_file())
+        elif path.exists():
+            paths = [str(path)]
+        else:
+            paths = []
+
+    files = [str(Path(p)) for p in paths if Path(p).is_file()]
+    if not files:
+        raise FileNotFoundError(f"未找到任何数据文件: {path_spec}")
+    return files
+
+
+def infer_data_format(path: str, data_format: str) -> str:
+    if data_format != "auto":
+        return data_format
+    lower = path.lower()
+    if lower.endswith(".jsonl") or lower.endswith(".jsonl.gz"):
+        return "jsonl"
+    if lower.endswith(".json") or lower.endswith(".json.gz"):
+        return "json"
+    return "text"
+
+
+def get_nested_value(obj: Any, dotted_key: str) -> Any:
+    cur = obj
+    for part in dotted_key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def coerce_text(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and all(isinstance(x, str) for x in value):
+        return "\n".join(x for x in value if x)
+    return None
+
+
+def extract_text_from_record(record: Any, json_text_keys: Sequence[str]) -> Optional[str]:
+    if isinstance(record, str):
+        return record
+    if isinstance(record, dict):
+        for key in json_text_keys:
+            value = get_nested_value(record, key)
+            text = coerce_text(value)
+            if text is not None:
+                return text
+        if len(record) == 1:
+            only_value = next(iter(record.values()))
+            text = coerce_text(only_value)
+            if text is not None:
+                return text
+    return None
+
+
+def load_docs_from_path(
+    path_spec: str,
+    *,
+    data_format: str,
+    split_mode: str,
+    json_text_keys: Sequence[str],
+    max_docs: Optional[int] = None,
+) -> Tuple[List[str], Dict[str, Any]]:
+    files = resolve_data_files(path_spec)
+    docs: List[str] = []
+    skipped_records = 0
+    example_keys: Optional[List[str]] = None
+    format_counts: Dict[str, int] = {}
+
+    for path in files:
+        cur_format = infer_data_format(path, data_format)
+        format_counts[cur_format] = format_counts.get(cur_format, 0) + 1
+
+        if cur_format == "text":
+            for doc in split_docs(read_text(path), split_mode):
+                docs.append(doc)
+                if max_docs is not None and len(docs) >= max_docs:
+                    break
+        elif cur_format == "jsonl":
+            opener = gzip.open if path.lower().endswith(".gz") else open
+            with opener(path, "rt", encoding="utf-8") as f:
+                for line_no, raw_line in enumerate(f, start=1):
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(f"JSONL 解析失败: {path}:{line_no} -> {exc}") from exc
+                    if example_keys is None and isinstance(record, dict):
+                        example_keys = sorted(record.keys())
+                    doc = extract_text_from_record(record, json_text_keys)
+                    if doc is None or not doc.strip():
+                        skipped_records += 1
+                        continue
+                    docs.append(doc.strip())
+                    if max_docs is not None and len(docs) >= max_docs:
+                        break
+        elif cur_format == "json":
+            opener = gzip.open if path.lower().endswith(".gz") else open
+            with opener(path, "rt", encoding="utf-8") as f:
+                payload = json.load(f)
+            records = payload if isinstance(payload, list) else [payload]
+            for idx, record in enumerate(records, start=1):
+                if example_keys is None and isinstance(record, dict):
+                    example_keys = sorted(record.keys())
+                doc = extract_text_from_record(record, json_text_keys)
+                if doc is None or not doc.strip():
+                    skipped_records += 1
+                    continue
+                docs.append(doc.strip())
+                if max_docs is not None and len(docs) >= max_docs:
+                    break
+        else:
+            raise ValueError(f"不支持的数据格式: {cur_format}")
+
+        if max_docs is not None and len(docs) >= max_docs:
+            break
+
+    if not docs:
+        detail = f" 可用 JSON keys 示例: {example_keys}" if example_keys else ""
+        raise ValueError(f"未从 `{path_spec}` 中解析出任何文档。{detail}")
+
+    return docs, {
+        "path_spec": path_spec,
+        "resolved_files": files,
+        "file_count": len(files),
+        "doc_count": len(docs),
+        "skipped_records": skipped_records,
+        "format_counts": format_counts,
+    }
 
 
 def train_val_test_split(docs: List[str], train_ratio: float, val_ratio: float, seed: int):
@@ -201,6 +359,30 @@ def make_collate_fn(pad_id: int):
                     mem[i, -cur.numel():] = cur
         return {"input_ids": xs, "labels": ys, "rosa_memory_ids": mem}
     return collate
+
+
+def build_dataloaders(
+    train_ds: Dataset,
+    val_ds: Dataset,
+    test_ds: Dataset,
+    *,
+    batch_size: int,
+    pad_id: int,
+    train_seed: int,
+):
+    collate_fn = make_collate_fn(pad_id)
+    train_generator = torch.Generator()
+    train_generator.manual_seed(train_seed)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        generator=train_generator,
+    )
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    return train_loader, val_loader, test_loader
 
 
 def count_params(model: nn.Module) -> int:
@@ -724,10 +906,26 @@ def build_model_config(args, tokenizer) -> ModelConfig:
 
 def main():
     parser = argparse.ArgumentParser(description="训练标准 Qwen/LLaMA 风格基线模型 与 Emb(ROSA(x)) 融合模型（文档前文 memory 版）进行对比。")
-    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="单一数据源路径，可为文件、目录或通配符。未显式提供 train/val/test 时使用随机切分。")
+    parser.add_argument("--train_data_path", type=str, default=None,
+                        help="显式训练集路径，可为文件、目录或通配符。")
+    parser.add_argument("--val_data_path", type=str, default=None,
+                        help="显式验证集路径，可为文件、目录或通配符。")
+    parser.add_argument("--test_data_path", type=str, default=None,
+                        help="显式测试集路径，可为文件、目录或通配符。")
     parser.add_argument("--tokenizer_name_or_path", type=str, default=None,
                         help="HF tokenizer 路径或名称。为空时使用 byte fallback，仅用于烟雾测试。")
     parser.add_argument("--split_mode", type=str, default="paragraph", choices=["paragraph", "line", "stream"])
+    parser.add_argument("--data_format", type=str, default="auto", choices=["auto", "text", "jsonl", "json"],
+                        help="auto 会按扩展名自动识别；json/jsonl 默认每条记录视为一个文档。")
+    parser.add_argument("--json_text_keys", type=str, default="text,content,body,message",
+                        help="JSON/JSONL 中按优先级查找文本的字段名，逗号分隔，支持 a.b.c。")
+    parser.add_argument("--max_docs", type=int, default=None,
+                        help="单一数据源模式下，最多读取多少个文档后再做 train/val/test 切分。")
+    parser.add_argument("--max_train_docs", type=int, default=None)
+    parser.add_argument("--max_val_docs", type=int, default=None)
+    parser.add_argument("--max_test_docs", type=int, default=None)
     parser.add_argument("--train_ratio", type=float, default=0.8)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -763,14 +961,65 @@ def main():
     set_seed(args.seed)
 
     tokenizer = build_tokenizer(args.tokenizer_name_or_path)
-    text = read_text(args.data_path)
-    docs = split_docs(text, args.split_mode)
-    train_docs, val_docs, test_docs = train_val_test_split(docs, args.train_ratio, args.val_ratio, args.seed)
+    json_text_keys = parse_csv_arg(args.json_text_keys)
+    if not json_text_keys:
+        raise ValueError("--json_text_keys 不能为空。")
 
-    print(f"总文档数: {len(docs)}")
+    explicit_split_mode = any([args.train_data_path, args.val_data_path, args.test_data_path])
+    if explicit_split_mode:
+        if not all([args.train_data_path, args.val_data_path, args.test_data_path]):
+            raise ValueError("使用显式数据集切分时，--train_data_path/--val_data_path/--test_data_path 必须同时提供。")
+        train_docs, train_source = load_docs_from_path(
+            args.train_data_path,
+            data_format=args.data_format,
+            split_mode=args.split_mode,
+            json_text_keys=json_text_keys,
+            max_docs=args.max_train_docs,
+        )
+        val_docs, val_source = load_docs_from_path(
+            args.val_data_path,
+            data_format=args.data_format,
+            split_mode=args.split_mode,
+            json_text_keys=json_text_keys,
+            max_docs=args.max_val_docs,
+        )
+        test_docs, test_source = load_docs_from_path(
+            args.test_data_path,
+            data_format=args.data_format,
+            split_mode=args.split_mode,
+            json_text_keys=json_text_keys,
+            max_docs=args.max_test_docs,
+        )
+        dataset_source = {
+            "mode": "explicit_splits",
+            "train": train_source,
+            "val": val_source,
+            "test": test_source,
+        }
+        total_docs = len(train_docs) + len(val_docs) + len(test_docs)
+    else:
+        if not args.data_path:
+            raise ValueError("未提供数据路径。请传 --data_path，或同时传 --train_data_path/--val_data_path/--test_data_path。")
+        docs, source_meta = load_docs_from_path(
+            args.data_path,
+            data_format=args.data_format,
+            split_mode=args.split_mode,
+            json_text_keys=json_text_keys,
+            max_docs=args.max_docs,
+        )
+        train_docs, val_docs, test_docs = train_val_test_split(docs, args.train_ratio, args.val_ratio, args.seed)
+        dataset_source = {
+            "mode": "single_source",
+            "source": source_meta,
+        }
+        total_docs = len(docs)
+
+    print(f"总文档数: {total_docs}")
     print(f"train/val/test: {len(train_docs)} / {len(val_docs)} / {len(test_docs)}")
     print(f"架构风格: {args.arch_style}")
     print(f"tokenizer: {args.tokenizer_name_or_path or 'byte-fallback'}")
+    print(f"data format: {args.data_format}")
+    print(f"json text keys: {json_text_keys}")
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
     print(f"ROSA 历史 memory tokens: {args.rosa_memory_tokens}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
@@ -791,10 +1040,6 @@ def main():
         test_tok, seq_len=args.seq_len, pad_id=tokenizer.pad_token_id,
         stride=args.stride, rosa_memory_tokens=args.rosa_memory_tokens
     )
-    collate_fn = make_collate_fn(tokenizer.pad_token_id)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
@@ -824,6 +1069,12 @@ def main():
         print("注意：参数量不一致。")
 
     print("\n==== 训练 baseline ====")
+    train_loader, val_loader, test_loader = build_dataloaders(
+        train_ds, val_ds, test_ds,
+        batch_size=args.batch_size,
+        pad_id=tokenizer.pad_token_id,
+        train_seed=args.seed,
+    )
     base_hist = train_one_model(
         baseline, train_loader, val_loader, device,
         pad_id=tokenizer.pad_token_id,
@@ -834,6 +1085,12 @@ def main():
 
     print("\n==== 训练 rosa-fused ====")
     set_seed(args.seed)
+    train_loader, val_loader, test_loader = build_dataloaders(
+        train_ds, val_ds, test_ds,
+        batch_size=args.batch_size,
+        pad_id=tokenizer.pad_token_id,
+        train_seed=args.seed,
+    )
     rosa_model = RosaFusedLM(
         cfg,
         pad_id=tokenizer.pad_token_id,
@@ -863,6 +1120,10 @@ def main():
             "eos_token_id": tokenizer.eos_token_id,
         },
         "dataset": {
+            "source": dataset_source,
+            "train_docs": len(train_docs),
+            "val_docs": len(val_docs),
+            "test_docs": len(test_docs),
             "train_samples": len(train_ds),
             "val_samples": len(val_ds),
             "test_samples": len(test_ds),
