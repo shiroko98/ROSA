@@ -154,5 +154,56 @@ class FairComparisonTests(unittest.TestCase):
         self.assertEqual(collect_batches(loader_a), collect_batches(loader_b))
 
 
+class GlobalTrainMemoryTests(unittest.TestCase):
+    def test_build_global_memory_prefixes_keeps_previous_docs_only(self):
+        prefixes, full_memory = rosa_mod.build_global_memory_prefixes(
+            [
+                [1, 2, 3],
+                [4, 5],
+                [6, 7, 8],
+            ],
+            max_tokens=4,
+        )
+
+        self.assertEqual(prefixes, [[], [1, 2, 3], [2, 3, 4, 5]])
+        self.assertEqual(full_memory, [4, 5, 6, 7, 8][-4:])
+
+    def test_global_train_mode_uses_prefix_memory_for_train_and_full_train_memory_for_eval(self):
+        train_tok = [
+            [10, 11, 12, 13],
+            [20, 21, 22, 23],
+        ]
+        val_tok = [
+            [30, 31, 32, 33],
+        ]
+
+        train_ds, val_ds, test_ds, meta = rosa_mod.build_chunk_datasets(
+            train_tok,
+            val_tok,
+            val_tok,
+            seq_len=2,
+            pad_id=0,
+            stride=2,
+            rosa_memory_tokens=2,
+            rosa_memory_mode="global_train",
+            rosa_global_memory_tokens=3,
+        )
+
+        self.assertEqual(meta["rosa_memory_mode"], "global_train")
+        self.assertEqual(meta["global_train_memory_tokens"], 3)
+        self.assertEqual(meta["train_global_memory_size"], 3)
+
+        first_train = train_ds[0]
+        second_train = train_ds[1]
+        third_train = train_ds[2]
+        first_val = val_ds[0]
+
+        self.assertEqual(first_train["rosa_memory_ids"].tolist(), [])
+        self.assertEqual(second_train["rosa_memory_ids"].tolist(), [10, 11])
+        self.assertEqual(third_train["rosa_memory_ids"].tolist(), [11, 12, 13])
+        self.assertEqual(first_val["rosa_memory_ids"].tolist(), [21, 22, 23])
+        self.assertEqual(len(test_ds), len(val_ds))
+
+
 if __name__ == "__main__":
     unittest.main()

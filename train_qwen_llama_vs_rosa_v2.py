@@ -293,6 +293,31 @@ def tokenize_docs(docs: Sequence[str], tokenizer, add_bos: bool, add_eos: bool) 
     return out
 
 
+def tail_tokens(tokens: Sequence[int], max_tokens: int) -> List[int]:
+    if max_tokens is None or max_tokens <= 0:
+        return []
+    if len(tokens) <= max_tokens:
+        return list(tokens)
+    return list(tokens[-max_tokens:])
+
+
+def build_global_memory_prefixes(
+    docs_tokens: Sequence[Sequence[int]],
+    max_tokens: int,
+) -> Tuple[List[List[int]], List[int]]:
+    if max_tokens <= 0:
+        return [[] for _ in docs_tokens], []
+
+    prefixes: List[List[int]] = []
+    running: List[int] = []
+    for ids in docs_tokens:
+        prefixes.append(list(running))
+        if ids:
+            merged = running + list(ids)
+            running = merged[-max_tokens:]
+    return prefixes, list(running)
+
+
 class DocChunkDataset(Dataset):
     """
     以“文档连续流”的方式切 chunk，并为每个 chunk 返回其左侧历史 memory。
@@ -306,15 +331,29 @@ class DocChunkDataset(Dataset):
         pad_id: int,
         stride: Optional[int] = None,
         rosa_memory_tokens: int = 512,
+        global_memory_tokens: int = 0,
+        doc_global_prefixes: Optional[Sequence[Sequence[int]]] = None,
+        shared_global_memory: Optional[Sequence[int]] = None,
     ):
         self.seq_len = seq_len
         self.pad_id = pad_id
         self.rosa_memory_tokens = rosa_memory_tokens
+        self.global_memory_tokens = global_memory_tokens
         self.samples: List[Tuple[List[int], List[int], List[int]]] = []
         stride = stride or seq_len
-        for ids in docs_tokens:
+        if doc_global_prefixes is not None and len(doc_global_prefixes) != len(docs_tokens):
+            raise ValueError("doc_global_prefixes 长度必须与 docs_tokens 一致。")
+
+        global_shared_tail = tail_tokens(shared_global_memory or [], global_memory_tokens)
+
+        for doc_idx, ids in enumerate(docs_tokens):
             if len(ids) < 2:
                 continue
+            doc_global_prefix = (
+                tail_tokens(doc_global_prefixes[doc_idx], global_memory_tokens)
+                if doc_global_prefixes is not None
+                else global_shared_tail
+            )
             max_start = max(1, len(ids) - 1)
             for start in range(0, max_start, stride):
                 chunk = list(ids[start:start + seq_len + 1])
@@ -326,7 +365,8 @@ class DocChunkDataset(Dataset):
                 y = chunk[1:]
 
                 mem_start = max(0, start - rosa_memory_tokens)
-                mem = list(ids[mem_start:start])
+                local_mem = list(ids[mem_start:start])
+                mem = doc_global_prefix + local_mem
                 self.samples.append((x, y, mem))
 
                 if start + seq_len + 1 >= len(ids):
@@ -383,6 +423,90 @@ def build_dataloaders(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     return train_loader, val_loader, test_loader
+
+
+def build_chunk_datasets(
+    train_tok: Sequence[Sequence[int]],
+    val_tok: Sequence[Sequence[int]],
+    test_tok: Sequence[Sequence[int]],
+    *,
+    seq_len: int,
+    pad_id: int,
+    stride: Optional[int],
+    rosa_memory_tokens: int,
+    rosa_memory_mode: str,
+    rosa_global_memory_tokens: int,
+):
+    if rosa_memory_mode == "doc_local":
+        train_ds = DocChunkDataset(
+            train_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=rosa_memory_tokens,
+        )
+        val_ds = DocChunkDataset(
+            val_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=rosa_memory_tokens,
+        )
+        test_ds = DocChunkDataset(
+            test_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=rosa_memory_tokens,
+        )
+        meta = {
+            "rosa_memory_mode": rosa_memory_mode,
+            "doc_local_memory_tokens": rosa_memory_tokens,
+            "global_train_memory_tokens": 0,
+            "train_global_memory_size": 0,
+        }
+        return train_ds, val_ds, test_ds, meta
+
+    if rosa_memory_mode != "global_train":
+        raise ValueError(f"未知 rosa_memory_mode: {rosa_memory_mode}")
+
+    global_cap = rosa_global_memory_tokens if rosa_global_memory_tokens > 0 else rosa_memory_tokens
+    train_prefixes, full_train_memory = build_global_memory_prefixes(train_tok, global_cap)
+
+    train_ds = DocChunkDataset(
+        train_tok,
+        seq_len=seq_len,
+        pad_id=pad_id,
+        stride=stride,
+        rosa_memory_tokens=rosa_memory_tokens,
+        global_memory_tokens=global_cap,
+        doc_global_prefixes=train_prefixes,
+    )
+    val_ds = DocChunkDataset(
+        val_tok,
+        seq_len=seq_len,
+        pad_id=pad_id,
+        stride=stride,
+        rosa_memory_tokens=rosa_memory_tokens,
+        global_memory_tokens=global_cap,
+        shared_global_memory=full_train_memory,
+    )
+    test_ds = DocChunkDataset(
+        test_tok,
+        seq_len=seq_len,
+        pad_id=pad_id,
+        stride=stride,
+        rosa_memory_tokens=rosa_memory_tokens,
+        global_memory_tokens=global_cap,
+        shared_global_memory=full_train_memory,
+    )
+    meta = {
+        "rosa_memory_mode": rosa_memory_mode,
+        "doc_local_memory_tokens": rosa_memory_tokens,
+        "global_train_memory_tokens": global_cap,
+        "train_global_memory_size": len(full_train_memory),
+    }
+    return train_ds, val_ds, test_ds, meta
 
 
 def count_params(model: nn.Module) -> int:
@@ -933,6 +1057,10 @@ def main():
     parser.add_argument("--stride", type=int, default=None)
     parser.add_argument("--rosa_memory_tokens", type=int, default=512,
                         help="每个 chunk 可看的同文档左侧历史 token 数。")
+    parser.add_argument("--rosa_memory_mode", type=str, default="doc_local", choices=["doc_local", "global_train"],
+                        help="doc_local 只看同文档前文；global_train 额外拼接全局 train memory。")
+    parser.add_argument("--rosa_global_memory_tokens", type=int, default=0,
+                        help="global_train 模式下可见的全局 train memory token 数；0 表示退化为与 rosa_memory_tokens 相同。")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -1021,28 +1149,33 @@ def main():
     print(f"data format: {args.data_format}")
     print(f"json text keys: {json_text_keys}")
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
-    print(f"ROSA 历史 memory tokens: {args.rosa_memory_tokens}")
+    print(f"ROSA memory mode: {args.rosa_memory_mode}")
+    print(f"ROSA 文档内 memory tokens: {args.rosa_memory_tokens}")
+    if args.rosa_memory_mode == "global_train":
+        effective_global_tokens = args.rosa_global_memory_tokens if args.rosa_global_memory_tokens > 0 else args.rosa_memory_tokens
+        print(f"ROSA 全局 train memory tokens: {effective_global_tokens}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
     train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
     val_tok = tokenize_docs(val_docs, tokenizer, add_bos=True, add_eos=True)
     test_tok = tokenize_docs(test_docs, tokenizer, add_bos=True, add_eos=True)
 
-    train_ds = DocChunkDataset(
-        train_tok, seq_len=args.seq_len, pad_id=tokenizer.pad_token_id,
-        stride=args.stride, rosa_memory_tokens=args.rosa_memory_tokens
-    )
-    val_ds = DocChunkDataset(
-        val_tok, seq_len=args.seq_len, pad_id=tokenizer.pad_token_id,
-        stride=args.stride, rosa_memory_tokens=args.rosa_memory_tokens
-    )
-    test_ds = DocChunkDataset(
-        test_tok, seq_len=args.seq_len, pad_id=tokenizer.pad_token_id,
-        stride=args.stride, rosa_memory_tokens=args.rosa_memory_tokens
+    train_ds, val_ds, test_ds, memory_meta = build_chunk_datasets(
+        train_tok,
+        val_tok,
+        test_tok,
+        seq_len=args.seq_len,
+        pad_id=tokenizer.pad_token_id,
+        stride=args.stride,
+        rosa_memory_tokens=args.rosa_memory_tokens,
+        rosa_memory_mode=args.rosa_memory_mode,
+        rosa_global_memory_tokens=args.rosa_global_memory_tokens,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
+    if memory_meta["rosa_memory_mode"] == "global_train":
+        print(f"训练集全局 memory 实际长度: {memory_meta['train_global_memory_size']}")
     cfg = build_model_config(args, tokenizer)
 
     set_seed(args.seed)
@@ -1121,6 +1254,7 @@ def main():
         },
         "dataset": {
             "source": dataset_source,
+            "memory": memory_meta,
             "train_docs": len(train_docs),
             "val_docs": len(val_docs),
             "test_docs": len(test_docs),
