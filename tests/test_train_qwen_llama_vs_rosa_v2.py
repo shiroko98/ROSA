@@ -199,6 +199,19 @@ class FairComparisonTests(unittest.TestCase):
 
 
 class GlobalTrainMemoryTests(unittest.TestCase):
+    def test_doc_local_sam_precompute_uses_full_doc_history(self):
+        docs = [[1, 2, 1, 2, 3]]
+        pre = rosa_mod.build_doc_local_precomputed_rosa(
+            docs,
+            min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+        )
+
+        self.assertEqual(pre[0]["rosa_ids"], [-1, -1, -1, 1, -1])
+        self.assertEqual(pre[0]["fired_match_lens"], [0, 0, 0, 2, 0])
+        self.assertEqual(pre[0]["raw_best_lens"], [0, 0, 1, 2, 0])
+
     def test_build_global_memory_prefixes_keeps_previous_docs_only(self):
         prefixes, full_memory = rosa_mod.build_global_memory_prefixes(
             [
@@ -231,6 +244,10 @@ class GlobalTrainMemoryTests(unittest.TestCase):
             rosa_memory_tokens=2,
             rosa_memory_mode="global_train",
             rosa_global_memory_tokens=3,
+            rosa_backend="sam",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
         )
 
         self.assertEqual(meta["rosa_memory_mode"], "global_train")
@@ -247,6 +264,35 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         self.assertEqual(third_train["rosa_memory_ids"].tolist(), [11, 12, 13])
         self.assertEqual(first_val["rosa_memory_ids"].tolist(), [21, 22, 23])
         self.assertEqual(len(test_ds), len(val_ds))
+
+    def test_doc_local_sam_builds_precomputed_chunk_features(self):
+        docs = [[1, 2, 1, 2, 3]]
+        train_ds, val_ds, test_ds, meta = rosa_mod.build_chunk_datasets(
+            docs,
+            docs,
+            docs,
+            seq_len=2,
+            pad_id=0,
+            stride=2,
+            rosa_memory_tokens=1,
+            rosa_memory_mode="doc_local",
+            rosa_global_memory_tokens=0,
+            rosa_backend="sam",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+        )
+
+        self.assertTrue(meta["precomputed_doc_local_sam"])
+        first = train_ds[0]
+        second = train_ds[1]
+        self.assertEqual(first["rosa_memory_ids"].tolist(), [])
+        self.assertEqual(second["rosa_memory_ids"].tolist(), [])
+        self.assertEqual(first["rosa_precomputed_ids"].tolist(), [-1, -1])
+        self.assertEqual(second["rosa_precomputed_ids"].tolist(), [-1, 1])
+        self.assertEqual(second["rosa_precomputed_match_lens"].tolist(), [0, 2])
+        self.assertEqual(second["rosa_precomputed_raw_best_lens"].tolist(), [1, 2])
+        self.assertEqual(len(val_ds), len(test_ds))
 
 
 if __name__ == "__main__":

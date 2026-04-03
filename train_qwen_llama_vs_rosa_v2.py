@@ -318,6 +318,38 @@ def build_global_memory_prefixes(
     return prefixes, list(running)
 
 
+def build_doc_local_precomputed_rosa(
+    docs_tokens: Sequence[Sequence[int]],
+    *,
+    min_match_len: int,
+    special_ids: Optional[set],
+    forbid_special_target: bool,
+) -> List[Dict[str, List[int]]]:
+    special_ids = special_ids or set()
+    out: List[Dict[str, List[int]]] = []
+    for ids in docs_tokens:
+        preds, match_lens = sam_rosa_predict(ids, min_match_len=min_match_len)
+        rosa_ids: List[int] = []
+        fired_match_lens: List[int] = []
+        raw_best_lens: List[int] = []
+        for pred, raw_m in zip(preds, match_lens):
+            raw_best_lens.append(raw_m)
+            if pred >= 0 and (not forbid_special_target or pred not in special_ids):
+                rosa_ids.append(pred)
+                fired_match_lens.append(raw_m)
+            else:
+                rosa_ids.append(-1)
+                fired_match_lens.append(0)
+        out.append(
+            {
+                "rosa_ids": rosa_ids,
+                "fired_match_lens": fired_match_lens,
+                "raw_best_lens": raw_best_lens,
+            }
+        )
+    return out
+
+
 class DocChunkDataset(Dataset):
     """
     以“文档连续流”的方式切 chunk，并为每个 chunk 返回其左侧历史 memory。
@@ -334,15 +366,18 @@ class DocChunkDataset(Dataset):
         global_memory_tokens: int = 0,
         doc_global_prefixes: Optional[Sequence[Sequence[int]]] = None,
         shared_global_memory: Optional[Sequence[int]] = None,
+        doc_precomputed_rosa: Optional[Sequence[Dict[str, Sequence[int]]]] = None,
     ):
         self.seq_len = seq_len
         self.pad_id = pad_id
         self.rosa_memory_tokens = rosa_memory_tokens
         self.global_memory_tokens = global_memory_tokens
-        self.samples: List[Tuple[List[int], List[int], List[int]]] = []
+        self.samples: List[Dict[str, List[int]]] = []
         stride = stride or seq_len
         if doc_global_prefixes is not None and len(doc_global_prefixes) != len(docs_tokens):
             raise ValueError("doc_global_prefixes 长度必须与 docs_tokens 一致。")
+        if doc_precomputed_rosa is not None and len(doc_precomputed_rosa) != len(docs_tokens):
+            raise ValueError("doc_precomputed_rosa 长度必须与 docs_tokens 一致。")
 
         global_shared_tail = tail_tokens(shared_global_memory or [], global_memory_tokens)
 
@@ -367,7 +402,25 @@ class DocChunkDataset(Dataset):
                 mem_start = max(0, start - rosa_memory_tokens)
                 local_mem = list(ids[mem_start:start])
                 mem = doc_global_prefix + local_mem
-                self.samples.append((x, y, mem))
+                sample: Dict[str, List[int]] = {
+                    "input_ids": x,
+                    "labels": y,
+                    "rosa_memory_ids": mem,
+                }
+                if doc_precomputed_rosa is not None:
+                    pre = doc_precomputed_rosa[doc_idx]
+                    pre_ids = list(pre["rosa_ids"][start:start + seq_len])
+                    pre_fired = list(pre["fired_match_lens"][start:start + seq_len])
+                    pre_raw = list(pre["raw_best_lens"][start:start + seq_len])
+                    if len(pre_ids) < seq_len:
+                        pad_n = seq_len - len(pre_ids)
+                        pre_ids = pre_ids + [-1] * pad_n
+                        pre_fired = pre_fired + [0] * pad_n
+                        pre_raw = pre_raw + [0] * pad_n
+                    sample["rosa_precomputed_ids"] = pre_ids
+                    sample["rosa_precomputed_match_lens"] = pre_fired
+                    sample["rosa_precomputed_raw_best_lens"] = pre_raw
+                self.samples.append(sample)
 
                 if start + seq_len + 1 >= len(ids):
                     break
@@ -376,12 +429,19 @@ class DocChunkDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        x, y, mem = self.samples[idx]
-        return {
-            "input_ids": torch.tensor(x, dtype=torch.long),
-            "labels": torch.tensor(y, dtype=torch.long),
-            "rosa_memory_ids": torch.tensor(mem, dtype=torch.long),
+        sample = self.samples[idx]
+        out = {
+            "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long),
+            "labels": torch.tensor(sample["labels"], dtype=torch.long),
+            "rosa_memory_ids": torch.tensor(sample["rosa_memory_ids"], dtype=torch.long),
         }
+        if "rosa_precomputed_ids" in sample:
+            out["rosa_precomputed_ids"] = torch.tensor(sample["rosa_precomputed_ids"], dtype=torch.long)
+            out["rosa_precomputed_match_lens"] = torch.tensor(sample["rosa_precomputed_match_lens"], dtype=torch.long)
+            out["rosa_precomputed_raw_best_lens"] = torch.tensor(
+                sample["rosa_precomputed_raw_best_lens"], dtype=torch.long
+            )
+        return out
 
 
 def make_collate_fn(pad_id: int):
@@ -397,7 +457,16 @@ def make_collate_fn(pad_id: int):
                 cur = b["rosa_memory_ids"]
                 if cur.numel() > 0:
                     mem[i, -cur.numel():] = cur
-        return {"input_ids": xs, "labels": ys, "rosa_memory_ids": mem}
+        out = {"input_ids": xs, "labels": ys, "rosa_memory_ids": mem}
+        if "rosa_precomputed_ids" in batch[0]:
+            out["rosa_precomputed_ids"] = torch.stack([b["rosa_precomputed_ids"] for b in batch], dim=0)
+            out["rosa_precomputed_match_lens"] = torch.stack(
+                [b["rosa_precomputed_match_lens"] for b in batch], dim=0
+            )
+            out["rosa_precomputed_raw_best_lens"] = torch.stack(
+                [b["rosa_precomputed_raw_best_lens"] for b in batch], dim=0
+            )
+        return out
     return collate
 
 
@@ -436,7 +505,67 @@ def build_chunk_datasets(
     rosa_memory_tokens: int,
     rosa_memory_mode: str,
     rosa_global_memory_tokens: int,
+    rosa_backend: str,
+    rosa_min_match_len: int,
+    special_ids: Optional[set],
+    forbid_special_target: bool,
 ):
+    if rosa_memory_mode == "doc_local" and rosa_backend == "sam":
+        train_pre = build_doc_local_precomputed_rosa(
+            train_tok,
+            min_match_len=rosa_min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+        val_pre = build_doc_local_precomputed_rosa(
+            val_tok,
+            min_match_len=rosa_min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+        test_pre = build_doc_local_precomputed_rosa(
+            test_tok,
+            min_match_len=rosa_min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+        train_ds = DocChunkDataset(
+            train_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=0,
+            doc_precomputed_rosa=train_pre,
+        )
+        val_ds = DocChunkDataset(
+            val_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=0,
+            doc_precomputed_rosa=val_pre,
+        )
+        test_ds = DocChunkDataset(
+            test_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=0,
+            doc_precomputed_rosa=test_pre,
+        )
+        meta = {
+            "rosa_memory_mode": rosa_memory_mode,
+            "doc_local_memory_tokens": 0,
+            "global_train_memory_tokens": 0,
+            "train_global_memory_size": 0,
+            "precomputed_doc_local_sam": True,
+            "effective_history": "full_doc_prefix",
+            "train_precomputed_docs": len(train_pre),
+            "val_precomputed_docs": len(val_pre),
+            "test_precomputed_docs": len(test_pre),
+        }
+        return train_ds, val_ds, test_ds, meta
+
     if rosa_memory_mode == "doc_local":
         train_ds = DocChunkDataset(
             train_tok,
@@ -464,6 +593,8 @@ def build_chunk_datasets(
             "doc_local_memory_tokens": rosa_memory_tokens,
             "global_train_memory_tokens": 0,
             "train_global_memory_size": 0,
+            "precomputed_doc_local_sam": False,
+            "effective_history": f"doc_local_tail_{rosa_memory_tokens}",
         }
         return train_ds, val_ds, test_ds, meta
 
@@ -505,6 +636,8 @@ def build_chunk_datasets(
         "doc_local_memory_tokens": rosa_memory_tokens,
         "global_train_memory_tokens": global_cap,
         "train_global_memory_size": len(full_train_memory),
+        "precomputed_doc_local_sam": False,
+        "effective_history": f"global_train_tail_{global_cap}_plus_doc_local_tail_{rosa_memory_tokens}",
     }
     return train_ds, val_ds, test_ds, meta
 
@@ -851,7 +984,14 @@ class BaseLM(nn.Module):
         if cfg.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
 
-    def forward_hidden(self, input_ids: torch.Tensor, rosa_memory_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward_hidden(
+        self,
+        input_ids: torch.Tensor,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         x = self.embed_tokens(input_ids)
         seqlen = input_ids.shape[1]
         attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
@@ -861,8 +1001,22 @@ class BaseLM(nn.Module):
         x = self.norm(x)
         return x
 
-    def forward(self, input_ids: torch.Tensor, labels: Optional[torch.Tensor] = None, rosa_memory_ids: Optional[torch.Tensor] = None):
-        hidden = self.forward_hidden(input_ids, rosa_memory_ids=rosa_memory_ids)
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+    ):
+        hidden = self.forward_hidden(
+            input_ids,
+            rosa_memory_ids=rosa_memory_ids,
+            rosa_precomputed_ids=rosa_precomputed_ids,
+            rosa_precomputed_match_lens=rosa_precomputed_match_lens,
+            rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+        )
         logits = self.lm_head(hidden)
         out = {"logits": logits}
         if labels is not None:
@@ -903,21 +1057,37 @@ class RosaFusedLM(BaseLM):
         self,
         input_ids: torch.Tensor,
         rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         x = self.embed_tokens(input_ids)
         seqlen = input_ids.shape[1]
         attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
         attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
 
-        rosa_ids, fired_match_lens, raw_best_lens = rosa_retrieval_with_memory(
-            input_ids=input_ids,
-            memory_ids=rosa_memory_ids,
-            min_match_len=self.min_match_len,
-            pad_id=self.pad_id,
-            special_ids=self.special_ids,
-            forbid_special_target=self.forbid_special_target,
-            backend=self.rosa_backend,
-        )
+        if rosa_precomputed_ids is not None:
+            rosa_ids = rosa_precomputed_ids
+            fired_match_lens = (
+                rosa_precomputed_match_lens
+                if rosa_precomputed_match_lens is not None
+                else torch.zeros_like(rosa_ids)
+            )
+            raw_best_lens = (
+                rosa_precomputed_raw_best_lens
+                if rosa_precomputed_raw_best_lens is not None
+                else fired_match_lens
+            )
+        else:
+            rosa_ids, fired_match_lens, raw_best_lens = rosa_retrieval_with_memory(
+                input_ids=input_ids,
+                memory_ids=rosa_memory_ids,
+                min_match_len=self.min_match_len,
+                pad_id=self.pad_id,
+                special_ids=self.special_ids,
+                forbid_special_target=self.forbid_special_target,
+                backend=self.rosa_backend,
+            )
 
         active = (rosa_ids >= 0)
         rosa_ids_safe = rosa_ids.clamp_min(0)
@@ -947,8 +1117,22 @@ class RosaFusedLM(BaseLM):
         }
         return x, stats
 
-    def forward(self, input_ids: torch.Tensor, labels: Optional[torch.Tensor] = None, rosa_memory_ids: Optional[torch.Tensor] = None):
-        hidden, stats = self.forward_hidden(input_ids, rosa_memory_ids=rosa_memory_ids)
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+    ):
+        hidden, stats = self.forward_hidden(
+            input_ids,
+            rosa_memory_ids=rosa_memory_ids,
+            rosa_precomputed_ids=rosa_precomputed_ids,
+            rosa_precomputed_match_lens=rosa_precomputed_match_lens,
+            rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+        )
         logits = self.lm_head(hidden)
         out = {"logits": logits, **stats}
         if labels is not None:
@@ -989,8 +1173,18 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, pad_id:
         for batch in loader:
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
+            pre_ids = batch.get("rosa_precomputed_ids")
+            pre_match = batch.get("rosa_precomputed_match_lens")
+            pre_raw = batch.get("rosa_precomputed_raw_best_lens")
             y = labels_with_ignore(batch["labels"].to(device), pad_id)
-            out = model(x, y, rosa_memory_ids=mem)
+            out = model(
+                x,
+                y,
+                rosa_memory_ids=mem,
+                rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
+                rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
+                rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+            )
 
             loss = out["loss"]  # per-token mean CE
             mask = y.ne(-100)
@@ -1050,15 +1244,32 @@ def train_one_model(
         for batch in train_loader:
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
+            pre_ids = batch.get("rosa_precomputed_ids")
+            pre_match = batch.get("rosa_precomputed_match_lens")
+            pre_raw = batch.get("rosa_precomputed_raw_best_lens")
             y = labels_with_ignore(batch["labels"].to(device), pad_id)
 
             optimizer.zero_grad(set_to_none=True)
             if amp_enabled:
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-                    out = model(x, y, rosa_memory_ids=mem)
+                    out = model(
+                        x,
+                        y,
+                        rosa_memory_ids=mem,
+                        rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
+                        rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
+                        rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+                    )
                     loss = out["loss"]
             else:
-                out = model(x, y, rosa_memory_ids=mem)
+                out = model(
+                    x,
+                    y,
+                    rosa_memory_ids=mem,
+                    rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
+                    rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
+                    rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+                )
                 loss = out["loss"]
 
             loss.backward()
@@ -1266,10 +1477,6 @@ def main():
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
-    print(f"ROSA 文档内 memory tokens: {args.rosa_memory_tokens}")
-    if args.rosa_memory_mode == "global_train":
-        effective_global_tokens = args.rosa_global_memory_tokens if args.rosa_global_memory_tokens > 0 else args.rosa_memory_tokens
-        print(f"ROSA 全局 train memory tokens: {effective_global_tokens}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
     train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
@@ -1286,12 +1493,23 @@ def main():
         rosa_memory_tokens=args.rosa_memory_tokens,
         rosa_memory_mode=args.rosa_memory_mode,
         rosa_global_memory_tokens=args.rosa_global_memory_tokens,
+        rosa_backend=args.rosa_backend,
+        rosa_min_match_len=args.rosa_min_match_len,
+        special_ids=tokenizer.special_ids,
+        forbid_special_target=not args.rosa_allow_special_target,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
+    if memory_meta.get("precomputed_doc_local_sam"):
+        print("ROSA 文档内历史: full doc prefix (SAM precompute)")
+    else:
+        print(f"ROSA 文档内 memory tokens: {memory_meta['doc_local_memory_tokens']}")
     if memory_meta["rosa_memory_mode"] == "global_train":
+        print(f"ROSA 全局 train memory tokens: {memory_meta['global_train_memory_tokens']}")
         print(f"训练集全局 memory 实际长度: {memory_meta['train_global_memory_size']}")
+    if memory_meta.get("precomputed_doc_local_sam"):
+        print("ROSA 特征: doc-local SAM 预计算模式")
     cfg = build_model_config(args, tokenizer)
 
     set_seed(args.seed)
@@ -1373,8 +1591,9 @@ def main():
         "rosa": {
             "backend": args.rosa_backend,
             "memory_mode": args.rosa_memory_mode,
-            "memory_tokens": args.rosa_memory_tokens,
+            "memory_tokens": memory_meta["doc_local_memory_tokens"],
             "global_memory_tokens": memory_meta["global_train_memory_tokens"],
+            "effective_history": memory_meta["effective_history"],
             "min_match_len": args.rosa_min_match_len,
             "inject_layers": args.rosa_inject_layers,
             "scale": args.rosa_scale,
