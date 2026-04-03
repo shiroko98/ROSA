@@ -644,40 +644,81 @@ def _pad_filtered_mem(mem_row: List[int], pad_id: int) -> List[int]:
     return [x for x in mem_row if x != pad_id]
 
 
+def sam_rosa_predict(seq: Sequence[int], min_match_len: int = 1) -> Tuple[List[int], List[int]]:
+    n = len(seq)
+    pred = [-1] * n
+    match_len = [0] * n
+    if n == 0:
+        return pred, match_len
+
+    s = 2 * n + 1
+    trans: List[Optional[Dict[int, int]]] = [None] * s
+    link = [-1] * s
+    length = [0] * s
+    endpos = [-1] * s
+
+    trans[0] = {}
+    last = 0
+    z = 1
+
+    for i, t in enumerate(seq):
+        r = z
+        z += 1
+        trans[r] = {}
+        length[r] = length[last] + 1
+        p = last
+
+        while p != -1 and t not in trans[p]:
+            trans[p][t] = r
+            p = link[p]
+
+        if p == -1:
+            link[r] = 0
+        else:
+            q = trans[p][t]
+            if length[p] + 1 == length[q]:
+                link[r] = q
+            else:
+                u = z
+                z += 1
+                trans[u] = trans[q].copy()
+                length[u] = length[p] + 1
+                link[u] = link[q]
+                endpos[u] = endpos[q]
+
+                while p != -1 and trans[p].get(t) == q:
+                    trans[p][t] = u
+                    p = link[p]
+
+                link[q] = u
+                link[r] = u
+
+        v = r
+        a = -1
+        best_m = 0
+        while v != -1:
+            if length[v] > 0 and endpos[v] >= 0:
+                best_m = length[v]
+                if best_m >= min_match_len:
+                    idx = endpos[v] + 1
+                    if 0 <= idx < n:
+                        a = seq[idx]
+                break
+            v = link[v]
+
+        pred[i] = a
+        match_len[i] = best_m
+        last = r
+
+        v = last
+        while v != -1 and endpos[v] < i:
+            endpos[v] = i
+            v = link[v]
+
+    return pred, match_len
+
+
 def naive_rosa_retrieval_with_memory(
-    input_ids: torch.Tensor,
-    memory_ids: Optional[torch.Tensor],
-    min_match_len: int,
-    special_ids: Optional[set] = None,
-    forbid_special_target: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    在“同文档历史 memory + 当前 chunk”上做 naive ROSA。
-    返回：
-      retrieved_ids: 真正触发注入的位置对应的 token id，其他为 -1
-      fired_match_lens: 触发后使用的 match len，其他为 0
-      raw_best_lens: 每个位置阈值过滤前的最佳匹配长度（可能为 0/1/...）
-    """
-    bsz, seqlen = input_ids.shape
-    retrieved = torch.full_like(input_ids, -1)
-    fired_match_lens = torch.zeros_like(input_ids)
-    raw_best_lens = torch.zeros_like(input_ids)
-    special_ids = special_ids or set()
-
-    seqs = input_ids.detach().cpu().tolist()
-    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
-
-    for b in range(bsz):
-        seq = seqs[b]
-        mem = _pad_filtered_mem(mems[b], pad_id=-1)  # placeholder, will re-filter below
-        # memory_ids 内部 pad 值通常 >=0，这里重新根据 input 里不可能的 -1 过滤无效，因此不能这么做。
-        # 改为显式移除 special pad：调用处已经只传 pad 右/左填充，因此这里保留所有 >=0，后续由调用方传 pad_id 过滤更合适。
-        # 这里为了保持函数独立，只在下方用特殊列表替代。
-        combined = mem + seq  # will be overwritten by caller wrapper if needed
-        raise RuntimeError("This function should not be called directly; use rosa_retrieval_with_memory().")
-
-
-def rosa_retrieval_with_memory(
     input_ids: torch.Tensor,
     memory_ids: Optional[torch.Tensor],
     min_match_len: int,
@@ -730,6 +771,75 @@ def rosa_retrieval_with_memory(
     return retrieved.to(input_ids.device), fired_match_lens.to(input_ids.device), raw_best_lens.to(input_ids.device)
 
 
+def sam_rosa_retrieval_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    bsz, seqlen = input_ids.shape
+    retrieved = torch.full_like(input_ids, -1)
+    fired_match_lens = torch.zeros_like(input_ids)
+    raw_best_lens = torch.zeros_like(input_ids)
+    special_ids = special_ids or set()
+
+    seqs = input_ids.detach().cpu().tolist()
+    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
+
+    for b in range(bsz):
+        seq = seqs[b]
+        mem = [x for x in mems[b] if x != pad_id]
+        combined = mem + seq
+        offset = len(mem)
+
+        preds, match_lens = sam_rosa_predict(combined, min_match_len=min_match_len)
+        sliced_preds = preds[offset:offset + seqlen]
+        sliced_match_lens = match_lens[offset:offset + seqlen]
+
+        for i, (pred, raw_m) in enumerate(zip(sliced_preds, sliced_match_lens)):
+            raw_best_lens[b, i] = raw_m
+            if pred < 0:
+                continue
+            if forbid_special_target and pred in special_ids:
+                continue
+            retrieved[b, i] = pred
+            fired_match_lens[b, i] = raw_m
+
+    return retrieved.to(input_ids.device), fired_match_lens.to(input_ids.device), raw_best_lens.to(input_ids.device)
+
+
+def rosa_retrieval_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+    backend: str = "sam",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if backend == "naive":
+        return naive_rosa_retrieval_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+    if backend == "sam":
+        return sam_rosa_retrieval_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+    raise ValueError(f"未知 rosa backend: {backend}")
+
+
 class BaseLM(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -771,6 +881,7 @@ class RosaFusedLM(BaseLM):
         self,
         cfg: ModelConfig,
         pad_id: int,
+        rosa_backend: str = "sam",
         min_match_len: int = 1,
         inject_layers: int = 2,
         rosa_scale: float = 0.25,
@@ -780,6 +891,7 @@ class RosaFusedLM(BaseLM):
     ):
         super().__init__(cfg)
         self.pad_id = pad_id
+        self.rosa_backend = rosa_backend
         self.min_match_len = min_match_len
         self.inject_layers = inject_layers
         self.rosa_scale = rosa_scale
@@ -804,6 +916,7 @@ class RosaFusedLM(BaseLM):
             pad_id=self.pad_id,
             special_ids=self.special_ids,
             forbid_special_target=self.forbid_special_target,
+            backend=self.rosa_backend,
         )
 
         active = (rosa_ids >= 0)
@@ -1061,6 +1174,8 @@ def main():
                         help="doc_local 只看同文档前文；global_train 额外拼接全局 train memory。")
     parser.add_argument("--rosa_global_memory_tokens", type=int, default=0,
                         help="global_train 模式下可见的全局 train memory token 数；0 表示退化为与 rosa_memory_tokens 相同。")
+    parser.add_argument("--rosa_backend", type=str, default="sam", choices=["sam", "naive"],
+                        help="ROSA 检索后端。sam 更接近原版 ROSA；naive 用于回归对照。")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -1149,6 +1264,7 @@ def main():
     print(f"data format: {args.data_format}")
     print(f"json text keys: {json_text_keys}")
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
+    print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
     print(f"ROSA 文档内 memory tokens: {args.rosa_memory_tokens}")
     if args.rosa_memory_mode == "global_train":
@@ -1184,6 +1300,7 @@ def main():
     rosa_model = RosaFusedLM(
         cfg,
         pad_id=tokenizer.pad_token_id,
+        rosa_backend=args.rosa_backend,
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
@@ -1227,6 +1344,7 @@ def main():
     rosa_model = RosaFusedLM(
         cfg,
         pad_id=tokenizer.pad_token_id,
+        rosa_backend=args.rosa_backend,
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
@@ -1251,6 +1369,15 @@ def main():
             "pad_token_id": tokenizer.pad_token_id,
             "bos_token_id": tokenizer.bos_token_id,
             "eos_token_id": tokenizer.eos_token_id,
+        },
+        "rosa": {
+            "backend": args.rosa_backend,
+            "memory_mode": args.rosa_memory_mode,
+            "memory_tokens": args.rosa_memory_tokens,
+            "global_memory_tokens": memory_meta["global_train_memory_tokens"],
+            "min_match_len": args.rosa_min_match_len,
+            "inject_layers": args.rosa_inject_layers,
+            "scale": args.rosa_scale,
         },
         "dataset": {
             "source": dataset_source,

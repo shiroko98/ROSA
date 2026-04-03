@@ -47,6 +47,44 @@ class JsonlLoadingTests(unittest.TestCase):
 
 
 class RosaRetrievalTests(unittest.TestCase):
+    def test_sam_and_naive_retrieval_match_on_same_memory(self):
+        input_ids = torch.tensor(
+            [
+                [1, 2, 1, 2, 3],
+                [7, 8, 7, 8, 9],
+            ],
+            dtype=torch.long,
+        )
+        memory_ids = torch.tensor(
+            [
+                [4, 5, 1, 2, 0, 0],
+                [6, 7, 8, 0, 0, 0],
+            ],
+            dtype=torch.long,
+        )
+
+        naive = rosa_mod.rosa_retrieval_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=2,
+            pad_id=0,
+            special_ids={9},
+            forbid_special_target=True,
+            backend="naive",
+        )
+        sam = rosa_mod.rosa_retrieval_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=2,
+            pad_id=0,
+            special_ids={9},
+            forbid_special_target=True,
+            backend="sam",
+        )
+
+        for naive_tensor, sam_tensor in zip(naive, sam):
+            self.assertTrue(torch.equal(naive_tensor, sam_tensor))
+
     def test_rosa_retrieval_reads_from_left_memory(self):
         input_ids = torch.tensor([[1, 2, 4]], dtype=torch.long)
         memory_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
@@ -80,6 +118,12 @@ class RosaRetrievalTests(unittest.TestCase):
         self.assertEqual(retrieved.tolist(), [[-1]])
         self.assertEqual(fired_match_lens.tolist(), [[0]])
         self.assertEqual(raw_best_lens.tolist(), [[1]])
+
+    def test_sam_predict_returns_expected_match_length_and_target(self):
+        preds, match_lens = rosa_mod.sam_rosa_predict([1, 2, 1, 2, 3], min_match_len=2)
+
+        self.assertEqual(preds, [-1, -1, -1, 1, -1])
+        self.assertEqual(match_lens, [0, 0, 1, 2, 0])
 
 
 class FairComparisonTests(unittest.TestCase):
