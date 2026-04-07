@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：P0 基础设施
-- 当前状态：已完成“在线状态/地址接口”和“最小在线注入闭环”，下一步可进入性能与正确性基线
+- 当前状态：已完成“在线状态/地址接口”“最小在线注入闭环”“性能与正确性基线”，下一步可进入更完整的实验对比与后续 P1 能力
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -33,13 +33,15 @@
 - 最小在线闭环仍沿用共享 `embed_tokens` 作为 value，并使用单层早期注入配置完成验证。
 - 已补 `tests/test_rosa_online_state.py`，覆盖逐 token 对齐、special 过滤、snapshot/reset。
 - 已补在线前向级测试，覆盖 prefill 后 decode、一段 prompt 从空状态在线前向、跨步状态推进。
+- 已新增 `profile_rosa_online_baseline.py`，输出 prefill / decode microbenchmark / 地址一致性 / 覆盖率基线报告。
+- 已新增 VS Code launch 配置，可直接跑 smoke 基线与 Qwen checkpoint 对比实验。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 建立 P0 的性能与正确性基线。
-2. 补 profiling / baseline 脚本与日志指标。
-3. 记录 TTFT、decode tok/s、match coverage、fire coverage、平均 match_len。
+1. 基于新的 profiling 报告跑一次更完整的当前 ROSA vs online ROSA 对比实验。
+2. 整理结果后决定是否进入 P1 的 per-layer Value Store。
+3. 如果继续打 P0，可补更贴近 serving 的 KV cache / decode runtime 骨架。
 
 ## 自我验证清单
 
