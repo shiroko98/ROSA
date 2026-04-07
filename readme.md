@@ -33,6 +33,16 @@ git log --oneline -5
 - `per_layer`：每个注入层使用独立 value table
 - 当前初始化策略：`per_layer` value table 从共享词嵌入复制初值，方便和旧路径做平滑对比
 
+## Context-Aware Gate
+
+- 开关：`--rosa_context_gate`
+- 作用：用当前 hidden state 与 memory value 的相互作用决定注入强度
+- 当前输出统计：
+  - `rosa_avg_gate`
+  - `rosa_gate_coverage`
+  - `rosa_gate_hit`
+- `match_len` 仍然作为先验项参与 gate 计算；若关闭 `--rosa_disable_match_len_gate`，则只保留上下文项
+
 ## Profiling 基线
 
 - profiling 脚本：`profile_rosa_online_baseline.py`
@@ -47,6 +57,8 @@ git log --oneline -5
 
 - `ROSA v2 - Online Baseline Profile (Smoke)`：快速验证脚本链路。
 - `ROSA v2 - Online Baseline Profile (Qwen ckpt compare)`：用现有 Qwen checkpoint 直接比较 reference vs online。
+- `ROSA v2 - P1 Value+Gate Smoke (Qwen)`：直接训练一版 `per_layer + context_gate` 小实验。
+- `ROSA v2 - Online Baseline Profile (P1 Value+Gate Smoke)`：快速看 P1 组合路径是否跑通。
 
 ## 当前开发约定
 

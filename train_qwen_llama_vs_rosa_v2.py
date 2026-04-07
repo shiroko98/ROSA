@@ -829,6 +829,14 @@ class RosaValueStore(nn.Module):
         return self.per_layer_tables[layer_idx](addr_ids_safe)
 
 
+def init_identity_linear_(proj: nn.Linear) -> None:
+    if proj.weight.shape[0] != proj.weight.shape[1]:
+        raise ValueError("仅支持方阵线性层做 identity 初始化。")
+    with torch.no_grad():
+        proj.weight.zero_()
+        proj.weight.copy_(torch.eye(proj.weight.shape[0], device=proj.weight.device, dtype=proj.weight.dtype))
+
+
 @dataclass(frozen=True)
 class AddressMeta:
     addr_id: int
@@ -1471,6 +1479,7 @@ class RosaFusedLM(BaseLM):
         inject_layers: int = 2,
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
+        use_context_gate: bool = False,
         special_ids: Optional[set] = None,
         forbid_special_target: bool = True,
         use_match_len_gate: bool = True,
@@ -1482,6 +1491,7 @@ class RosaFusedLM(BaseLM):
         self.inject_layers = inject_layers
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
+        self.use_context_gate = use_context_gate
         self.special_ids = special_ids or set()
         self.forbid_special_target = forbid_special_target
         self.use_match_len_gate = use_match_len_gate
@@ -1492,6 +1502,32 @@ class RosaFusedLM(BaseLM):
             mode=rosa_value_mode,
         )
         self.rosa_value_store.copy_shared_weights_(self.embed_tokens)
+        if use_context_gate:
+            self.rosa_gate_hidden_norms = nn.ModuleList(
+                [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(max(0, inject_layers))]
+            )
+            self.rosa_gate_value_norms = nn.ModuleList(
+                [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(max(0, inject_layers))]
+            )
+            self.rosa_gate_key_projs = nn.ModuleList(
+                [nn.Linear(cfg.dim, cfg.dim, bias=False) for _ in range(max(0, inject_layers))]
+            )
+            self.rosa_gate_value_projs = nn.ModuleList(
+                [nn.Linear(cfg.dim, cfg.dim, bias=False) for _ in range(max(0, inject_layers))]
+            )
+            for proj in self.rosa_gate_key_projs:
+                init_identity_linear_(proj)
+            for proj in self.rosa_gate_value_projs:
+                init_identity_linear_(proj)
+            self.rosa_gate_match_len_scale = nn.Parameter(torch.ones(max(0, inject_layers)))
+            self.rosa_gate_bias = nn.Parameter(torch.zeros(max(0, inject_layers)))
+        else:
+            self.rosa_gate_hidden_norms = None
+            self.rosa_gate_value_norms = None
+            self.rosa_gate_key_projs = None
+            self.rosa_gate_value_projs = None
+            self.rosa_gate_match_len_scale = None
+            self.rosa_gate_bias = None
 
     def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
         return build_online_rosa_batch_state(
@@ -1500,6 +1536,25 @@ class RosaFusedLM(BaseLM):
             special_ids=self.special_ids,
             forbid_special_target=self.forbid_special_target,
         )
+
+    def compute_rosa_context_gate(
+        self,
+        layer_idx: int,
+        hidden_states: torch.Tensor,
+        rosa_value: torch.Tensor,
+        fired_match_lens: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.use_context_gate:
+            raise RuntimeError("use_context_gate=False 时不能调用 compute_rosa_context_gate。")
+        hidden_norm = self.rosa_gate_hidden_norms[layer_idx](hidden_states)
+        value_key = self.rosa_gate_key_projs[layer_idx](rosa_value)
+        value_key = self.rosa_gate_value_norms[layer_idx](value_key)
+        gate_logits = (hidden_norm * value_key).sum(dim=-1, keepdim=True) / math.sqrt(self.cfg.dim)
+        if self.use_match_len_gate:
+            len_prior = torch.log1p(fired_match_lens.float()).unsqueeze(-1)
+            gate_logits = gate_logits + self.rosa_gate_match_len_scale[layer_idx] * len_prior
+        gate_logits = gate_logits + self.rosa_gate_bias[layer_idx]
+        return torch.sigmoid(gate_logits)
 
     def forward_hidden(
         self,
@@ -1555,6 +1610,8 @@ class RosaFusedLM(BaseLM):
         else:
             len_scale = torch.ones_like(fired_match_lens, dtype=torch.float).unsqueeze(-1)
         active_mask = active.unsqueeze(-1)
+        gate_values: List[torch.Tensor] = []
+        gate_open_flags: List[torch.Tensor] = []
 
         for layer_idx, blk in enumerate(self.layers):
             if layer_idx < self.inject_layers:
@@ -1563,7 +1620,19 @@ class RosaFusedLM(BaseLM):
                     rosa_ids,
                     shared_embedding=self.embed_tokens,
                 )
-                rosa_resid = rosa_value * len_scale * self.rosa_scale
+                if self.use_context_gate:
+                    gate = self.compute_rosa_context_gate(
+                        layer_idx,
+                        x,
+                        rosa_value,
+                        fired_match_lens,
+                    )
+                    value_out = self.rosa_gate_value_projs[layer_idx](rosa_value)
+                    rosa_resid = value_out * gate * self.rosa_scale
+                    gate_values.append(gate)
+                    gate_open_flags.append(gate.gt(0.5))
+                else:
+                    rosa_resid = rosa_value * len_scale * self.rosa_scale
                 rosa_resid = rosa_resid * active_mask
                 x = x + rosa_resid
             x = blk(x, attn_mask)
@@ -1577,6 +1646,28 @@ class RosaFusedLM(BaseLM):
             "rosa_raw_match_coverage": raw_has_match.float().mean().item(),
             "rosa_raw_avg_best_len": raw_best_lens[raw_has_match].float().mean().item() if raw_has_match.any() else 0.0,
         }
+        if self.use_context_gate:
+            if gate_values:
+                gate_tensor = torch.cat([g.reshape(-1) for g in gate_values], dim=0)
+                gate_open = torch.cat([g.reshape(-1) for g in gate_open_flags], dim=0)
+                expanded_active = torch.cat([active.reshape(-1) for _ in gate_values], dim=0)
+                active_gate_values = gate_tensor[expanded_active]
+                active_gate_open = gate_open[expanded_active]
+                stats.update(
+                    {
+                        "rosa_avg_gate": active_gate_values.float().mean().item() if active_gate_values.numel() > 0 else 0.0,
+                        "rosa_gate_coverage": gate_open.float().mean().item() if gate_open.numel() > 0 else 0.0,
+                        "rosa_gate_hit": active_gate_open.float().mean().item() if active_gate_open.numel() > 0 else 0.0,
+                    }
+                )
+            else:
+                stats.update(
+                    {
+                        "rosa_avg_gate": 0.0,
+                        "rosa_gate_coverage": 0.0,
+                        "rosa_gate_hit": 0.0,
+                    }
+                )
         return x, stats
 
     def forward(
@@ -1883,6 +1974,8 @@ def main():
     parser.add_argument("--rosa_scale", type=float, default=0.25)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"],
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
+    parser.add_argument("--rosa_context_gate", action="store_true",
+                        help="启用 Engram 风格的 context-aware gate。")
     parser.add_argument("--rosa_allow_special_target", action="store_true")
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true",
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
@@ -1956,6 +2049,7 @@ def main():
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
+    print(f"ROSA context gate: {args.rosa_context_gate}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
     train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
@@ -2002,6 +2096,7 @@ def main():
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        use_context_gate=args.rosa_context_gate,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -2047,6 +2142,7 @@ def main():
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        use_context_gate=args.rosa_context_gate,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -2079,6 +2175,7 @@ def main():
             "inject_layers": args.rosa_inject_layers,
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
+            "context_gate": args.rosa_context_gate,
         },
         "dataset": {
             "source": dataset_source,

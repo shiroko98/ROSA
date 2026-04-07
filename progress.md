@@ -15,6 +15,7 @@
 - [x] 搭建最小在线注入闭环
 - [x] 建立性能与正确性基线
 - [x] P1-1: 引入 per-layer Value Store
+- [x] P1-2: 引入 context-aware gate
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -36,6 +37,11 @@
   - rosa_online
 - `RosaFusedLM` 已支持 `--rosa_value_mode shared|per_layer`。
 - 新增 `RosaValueStore`，`per_layer` 模式下每个注入层独立 lookup value。
+- `RosaFusedLM` 已支持 `--rosa_context_gate`。
+- gate 统计指标已接入输出：
+  - `rosa_avg_gate`
+  - `rosa_gate_coverage`
+  - `rosa_gate_hit`
 - profiling 报告输出 `profile_report.json`，包含：
   - prefill 延迟 / tok/s
   - decode microbenchmark 延迟 / tok/s
@@ -52,16 +58,18 @@
 - `conda run -n model python -m unittest discover -s tests`
 - `conda run -n model python profile_rosa_online_baseline.py ...`（Qwen ckpt 小样本实跑）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_value_mode per_layer`（P1-1 smoke）
-- 结果：共 23 个测试，全部通过；profiling 脚本已在真实 checkpoint 上跑通。
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_value_mode per_layer --rosa_context_gate`（P1 组合 smoke）
+- 结果：共 25 个测试，全部通过；profiling 脚本已在 `per_layer + gate` 组合上跑通。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
   - `outputs/profile_smoke_per_layer_value/profile_report.json`
+  - `outputs/profile_smoke_p1_value_gate/profile_report.json`
 
 ## 下一步
 
-- 继续完成 P1-2 `context-aware gate`。
-- 完成后再补 P1 组合实验入口。
+- 可以直接运行新的 launch 做 P1 特性组合实验。
+- 如果要验证训练收益，优先跑 `P1 Value+Gate Smoke (Qwen)`，再看 `comparison.json` 和 profiling 报告。
 
 ## 备注
 

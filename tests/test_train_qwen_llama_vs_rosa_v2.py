@@ -273,6 +273,81 @@ class RosaValueStoreTests(unittest.TestCase):
         self.assertFalse(torch.equal(layer0_value, layer1_value))
 
 
+class RosaContextGateTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_context_gate_reports_gate_stats(self):
+        rosa_mod.set_seed(3030)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=2,
+            rosa_scale=0.5,
+            use_context_gate=True,
+        )
+
+        with torch.no_grad():
+            out = model(
+                input_ids=torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long),
+                rosa_memory_ids=torch.empty((1, 0), dtype=torch.long),
+            )
+
+        self.assertIn("rosa_avg_gate", out)
+        self.assertIn("rosa_gate_coverage", out)
+        self.assertIn("rosa_gate_hit", out)
+        self.assertGreaterEqual(out["rosa_avg_gate"], 0.0)
+        self.assertLessEqual(out["rosa_avg_gate"], 1.0)
+        self.assertGreaterEqual(out["rosa_gate_coverage"], 0.0)
+        self.assertLessEqual(out["rosa_gate_coverage"], 1.0)
+        self.assertGreaterEqual(out["rosa_gate_hit"], 0.0)
+        self.assertLessEqual(out["rosa_gate_hit"], 1.0)
+
+    def test_context_gate_can_approximate_open_gate_legacy_path(self):
+        input_ids = torch.tensor([[2]], dtype=torch.long)
+        memory_ids = torch.tensor([[1, 2, 1]], dtype=torch.long)
+
+        rosa_mod.set_seed(4040)
+        legacy_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+            use_match_len_gate=False,
+            use_context_gate=False,
+        )
+        rosa_mod.set_seed(4040)
+        gated_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+            use_match_len_gate=False,
+            use_context_gate=True,
+        )
+
+        with torch.no_grad():
+            gated_model.rosa_gate_key_projs[0].weight.zero_()
+            gated_model.rosa_gate_bias[0].fill_(20.0)
+
+            legacy_out = legacy_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+            gated_out = gated_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+
+        self.assertTrue(torch.allclose(legacy_out["logits"], gated_out["logits"], atol=1e-5))
+        self.assertGreater(gated_out["rosa_avg_gate"], 0.9999)
+
+
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
         docs = [[1, 2, 1, 2, 3]]
