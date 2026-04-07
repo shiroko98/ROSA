@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：P0 基础设施
-- 当前状态：已完成 P1-4 的预取 / staging 基础壳子，下一步进入层位扫描
+- 当前状态：已完成 P1-5 层位扫描基础能力，下一步进入热点缓存
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -43,13 +43,15 @@
 - 已将 `RosaFusedLM` 拆成显式三段：`compute_rosa_address_batch()` -> `build_rosa_injection_payload()` -> `forward_hidden(..., rosa_payload=...)`。
 - 已新增 `RosaPrefetcher` / `RosaStagingBuffer`，支持 payload 预取、staging 与统计。
 - profiling 已支持 `--rosa_prefetch`，输出 `hit_rate` / `wait_ms` / `sync_fallbacks` 等预取指标。
+- 已支持显式层位集合 `--rosa_inject_layer_ids`，并新增 `scan_rosa_injection_layers.py` 做 single/pair 扫描。
+- 小型扫描实验已跑通，当前 toy smoke 上 `layer 0` 优于 `layer 1`。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 完成 P1-5：层位扫描与插入策略搜索。
-2. 为层位扫描补实验脚本/launch 与推荐输出。
-3. 最后补热点地址缓存与统计。
+1. 完成 P1-6：热点地址缓存与统计。
+2. 为 cache 补 hit rate / tail latency 相关 smoke。
+3. 收尾更新剩余 P1 进度与推荐实验入口。
 
 ## 自我验证清单
 

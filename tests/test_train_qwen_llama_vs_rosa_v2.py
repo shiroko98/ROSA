@@ -348,6 +348,64 @@ class RosaContextGateTests(unittest.TestCase):
         self.assertGreater(gated_out["rosa_avg_gate"], 0.9999)
 
 
+class RosaInjectionLayerSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=3,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_explicit_inject_layer_ids_override_front_layers(self):
+        rosa_mod.set_seed(5050)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            inject_layers=1,
+            inject_layer_ids=[2],
+            rosa_value_mode="per_layer",
+        )
+
+        self.assertEqual(model.inject_layer_ids, (2,))
+        self.assertEqual(model.inject_layer_index, {2: 0})
+        self.assertEqual(model.inject_layers, 1)
+
+    def test_single_explicit_layer_can_match_front_layer_when_weights_are_copied(self):
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        rosa_mod.set_seed(6060)
+        front_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            inject_layer_ids=[0],
+            rosa_scale=0.5,
+            rosa_value_mode="per_layer",
+        )
+        rosa_mod.set_seed(6060)
+        explicit_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            inject_layer_ids=[0],
+            rosa_scale=0.5,
+            rosa_value_mode="per_layer",
+        )
+
+        with torch.no_grad():
+            front_out = front_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+            explicit_out = explicit_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+
+        self.assertTrue(torch.allclose(front_out["logits"], explicit_out["logits"], atol=1e-6))
+
+
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
         docs = [[1, 2, 1, 2, 3]]

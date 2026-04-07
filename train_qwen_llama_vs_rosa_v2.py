@@ -120,6 +120,12 @@ def parse_csv_arg(text: Optional[str]) -> List[str]:
     return [x.strip() for x in text.split(",") if x.strip()]
 
 
+def parse_int_csv_arg(text: Optional[str]) -> List[int]:
+    if not text:
+        return []
+    return [int(x.strip()) for x in text.split(",") if x.strip()]
+
+
 def has_glob_magic(path_spec: str) -> bool:
     return any(ch in path_spec for ch in ["*", "?", "["])
 
@@ -1490,6 +1496,7 @@ class RosaFusedLM(BaseLM):
         rosa_backend: str = "sam",
         min_match_len: int = 1,
         inject_layers: int = 2,
+        inject_layer_ids: Optional[Sequence[int]] = None,
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
         use_context_gate: bool = False,
@@ -1501,7 +1508,16 @@ class RosaFusedLM(BaseLM):
         self.pad_id = pad_id
         self.rosa_backend = rosa_backend
         self.min_match_len = min_match_len
-        self.inject_layers = inject_layers
+        if inject_layer_ids:
+            normalized_ids = sorted({int(x) for x in inject_layer_ids})
+        else:
+            normalized_ids = list(range(max(0, min(inject_layers, cfg.n_layers))))
+        for layer_id in normalized_ids:
+            if layer_id < 0 or layer_id >= cfg.n_layers:
+                raise ValueError(f"inject layer id 超出范围: {layer_id}, n_layers={cfg.n_layers}")
+        self.inject_layer_ids = tuple(normalized_ids)
+        self.inject_layer_index = {layer_id: slot_idx for slot_idx, layer_id in enumerate(self.inject_layer_ids)}
+        self.inject_layers = len(self.inject_layer_ids)
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
         self.use_context_gate = use_context_gate
@@ -1511,29 +1527,29 @@ class RosaFusedLM(BaseLM):
         self.rosa_value_store = RosaValueStore(
             vocab_size=cfg.vocab_size,
             dim=cfg.dim,
-            inject_layers=inject_layers,
+            inject_layers=self.inject_layers,
             mode=rosa_value_mode,
         )
         self.rosa_value_store.copy_shared_weights_(self.embed_tokens)
         if use_context_gate:
             self.rosa_gate_hidden_norms = nn.ModuleList(
-                [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(max(0, inject_layers))]
+                [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(self.inject_layers)]
             )
             self.rosa_gate_value_norms = nn.ModuleList(
-                [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(max(0, inject_layers))]
+                [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(self.inject_layers)]
             )
             self.rosa_gate_key_projs = nn.ModuleList(
-                [nn.Linear(cfg.dim, cfg.dim, bias=False) for _ in range(max(0, inject_layers))]
+                [nn.Linear(cfg.dim, cfg.dim, bias=False) for _ in range(self.inject_layers)]
             )
             self.rosa_gate_value_projs = nn.ModuleList(
-                [nn.Linear(cfg.dim, cfg.dim, bias=False) for _ in range(max(0, inject_layers))]
+                [nn.Linear(cfg.dim, cfg.dim, bias=False) for _ in range(self.inject_layers)]
             )
             for proj in self.rosa_gate_key_projs:
                 init_identity_linear_(proj)
             for proj in self.rosa_gate_value_projs:
                 init_identity_linear_(proj)
-            self.rosa_gate_match_len_scale = nn.Parameter(torch.ones(max(0, inject_layers)))
-            self.rosa_gate_bias = nn.Parameter(torch.zeros(max(0, inject_layers)))
+            self.rosa_gate_match_len_scale = nn.Parameter(torch.ones(self.inject_layers))
+            self.rosa_gate_bias = nn.Parameter(torch.zeros(self.inject_layers))
         else:
             self.rosa_gate_hidden_norms = None
             self.rosa_gate_value_norms = None
@@ -1756,16 +1772,17 @@ class RosaFusedLM(BaseLM):
         gate_open_flags: List[torch.Tensor] = []
 
         for layer_idx, blk in enumerate(self.layers):
-            if layer_idx < self.inject_layers:
-                rosa_value = rosa_payload.layer_values[layer_idx]
+            slot_idx = self.inject_layer_index.get(layer_idx)
+            if slot_idx is not None:
+                rosa_value = rosa_payload.layer_values[slot_idx]
                 if self.use_context_gate:
                     gate = self.compute_rosa_context_gate(
-                        layer_idx,
+                        slot_idx,
                         x,
                         rosa_value,
                         fired_match_lens,
                     )
-                    value_out = self.rosa_gate_value_projs[layer_idx](rosa_value)
+                    value_out = self.rosa_gate_value_projs[slot_idx](rosa_value)
                     rosa_resid = value_out * gate * self.rosa_scale
                     gate_values.append(gate)
                     gate_open_flags.append(gate.gt(0.5))
@@ -1779,6 +1796,7 @@ class RosaFusedLM(BaseLM):
         raw_has_match = raw_best_lens.gt(0)
         stats = {
             "rosa_value_per_layer": 1.0 if self.rosa_value_store.is_per_layer else 0.0,
+            "rosa_inject_slots": float(self.inject_layers),
             "rosa_fire_coverage": active.float().mean().item(),
             "rosa_fired_avg_match_len": fired_match_lens[active].float().mean().item() if active.any() else 0.0,
             "rosa_raw_match_coverage": raw_has_match.float().mean().item(),
@@ -2127,6 +2145,8 @@ def main():
     parser.add_argument("--rosa_min_match_len", type=int, default=1,
                         help="建议训练时先从 1 开始，让 side-branch 先学会使用 ROSA 信号。")
     parser.add_argument("--rosa_inject_layers", type=int, default=2)
+    parser.add_argument("--rosa_inject_layer_ids", type=str, default="",
+                        help="显式指定注入层位，例如 0,2；为空时默认使用前 rosa_inject_layers 层。")
     parser.add_argument("--rosa_scale", type=float, default=0.25)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"],
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
@@ -2206,6 +2226,7 @@ def main():
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
+    print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
     train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
@@ -2250,6 +2271,7 @@ def main():
         rosa_backend=args.rosa_backend,
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
+        inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         use_context_gate=args.rosa_context_gate,
@@ -2296,6 +2318,7 @@ def main():
         rosa_backend=args.rosa_backend,
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
+        inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         use_context_gate=args.rosa_context_gate,
@@ -2329,6 +2352,7 @@ def main():
             "effective_history": memory_meta["effective_history"],
             "min_match_len": args.rosa_min_match_len,
             "inject_layers": args.rosa_inject_layers,
+            "inject_layer_ids": parse_int_csv_arg(args.rosa_inject_layer_ids),
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
             "context_gate": args.rosa_context_gate,

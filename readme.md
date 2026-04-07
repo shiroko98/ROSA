@@ -65,6 +65,15 @@ git log --oneline -5
   - CPU 路径支持异步预取
   - GPU 路径先走安全同步回退，但统计接口一致
 
+## Injection Layer Scan
+
+- 显式层位：`--rosa_inject_layer_ids`
+- 扫描脚本：`scan_rosa_injection_layers.py`
+- 典型用途：
+  - 单层扫描：`--scan_mode single`
+  - 双层扫描：`--scan_mode pair`
+- 输出文件：`<out_dir>/layer_scan_report.json`
+
 ## Profiling 基线
 
 - profiling 脚本：`profile_rosa_online_baseline.py`
@@ -82,6 +91,7 @@ git log --oneline -5
 - `ROSA v2 - P1 Value+Gate Smoke (Qwen)`：直接训练一版 `per_layer + context_gate` 小实验。
 - `ROSA v2 - Online Baseline Profile (P1 Value+Gate Smoke)`：快速看 P1 组合路径是否跑通。
 - `ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)`：快速看 prefetch/staging 统计是否正常。
+- `ROSA v2 - Injection Layer Scan (Smoke)`：快速扫描不同注入层位。
 
 ## 当前开发约定
 

@@ -18,6 +18,7 @@
 - [x] P1-2: 引入 context-aware gate
 - [x] P1-3: 把在线调度改成“地址先算、值后取”
 - [x] P1-4: 加入异步预取与 staging buffer
+- [x] P1-5: 层位扫描与插入策略搜索
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -56,6 +57,8 @@
   - `init_prefetcher()`
   - `schedule_rosa_prefetch()`
   - `consume_rosa_prefetch()`
+- 新增 `--rosa_inject_layer_ids`
+- 新增 `scan_rosa_injection_layers.py`
 - profiling 报告输出 `profile_report.json`，包含：
   - prefill 延迟 / tok/s
   - decode microbenchmark 延迟 / tok/s
@@ -74,19 +77,21 @@
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_value_mode per_layer`（P1-1 smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_value_mode per_layer --rosa_context_gate`（P1 组合 smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_prefetch`（P1-4 smoke）
-- 结果：共 29 个测试，全部通过；prefetch 报告已产出 `hit_rate/wait_ms/staged_bytes`。
+- `conda run -n model python scan_rosa_injection_layers.py ... --scan_mode single --layer_candidates \"0,1\"`（P1-5 smoke）
+- 结果：共 32 个测试，全部通过；层位扫描脚本已产出 ranked report。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
   - `outputs/profile_smoke_per_layer_value/profile_report.json`
   - `outputs/profile_smoke_p1_value_gate/profile_report.json`
   - `outputs/profile_smoke_prefetch_p1/profile_report.json`
+  - `outputs/scan_p1_layers_smoke/layer_scan_report.json`
 
 ## 下一步
 
 - 可以直接运行新的 launch 做 P1 特性组合实验。
 - 如果要验证训练收益，优先跑 `P1 Value+Gate Smoke (Qwen)`，再看 `comparison.json` 和 profiling 报告。
-- 下一步继续做 P1-5 层位扫描。
+- 下一步继续做 P1-6 热点地址缓存。
 
 ## 备注
 

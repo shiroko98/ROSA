@@ -40,6 +40,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no_tie_word_embeddings", action="store_true")
     parser.add_argument("--rosa_min_match_len", type=int, default=2)
     parser.add_argument("--rosa_inject_layers", type=int, default=1)
+    parser.add_argument("--rosa_inject_layer_ids", type=str, default="")
     parser.add_argument("--rosa_scale", type=float, default=0.15)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_context_gate", action="store_true")
@@ -124,6 +125,16 @@ def summarize_address_tensors(addressed: Dict[str, torch.Tensor]) -> Dict[str, f
     }
 
 
+def extract_scalar_rosa_stats(output: Dict[str, Any]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for key, value in output.items():
+        if not key.startswith("rosa_"):
+            continue
+        if isinstance(value, (int, float)):
+            out[key] = float(value)
+    return out
+
+
 def iter_batches(rows: Sequence[Dict[str, List[int]]], batch_size: int) -> List[List[Dict[str, List[int]]]]:
     return [list(rows[i:i + batch_size]) for i in range(0, len(rows), batch_size)]
 
@@ -189,6 +200,7 @@ def build_models(args, tokenizer, device: torch.device):
         rosa_backend=args.rosa_backend,
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
+        inject_layer_ids=rosa_mod.parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         use_context_gate=args.rosa_context_gate,
@@ -242,6 +254,7 @@ def run_prefill_profile(
     logit_max_abs_diff: List[float] = []
     address_cmp_rows: List[Dict[str, float]] = []
     coverage_rows: List[Dict[str, float]] = []
+    model_stats_rows: List[Dict[str, float]] = []
 
     for batch in batches:
         input_ids = torch.tensor([row["prefill"] for row in batch], dtype=torch.long, device=device)
@@ -291,6 +304,7 @@ def run_prefill_profile(
         logit_max_abs_diff.append(torch.max(torch.abs(reference_out["logits"] - online_out["logits"])).item())
         address_cmp_rows.append(compare_tensor_dicts(reference_address, online_address))
         coverage_rows.append(summarize_address_tensors(reference_address))
+        model_stats_rows.append(extract_scalar_rosa_stats(reference_out))
 
     return {
         "timings": {
@@ -308,6 +322,10 @@ def run_prefill_profile(
         "coverage": {
             key: average_metric(coverage_rows, key)
             for key in (coverage_rows[0].keys() if coverage_rows else [])
+        },
+        "model_stats": {
+            key: average_metric(model_stats_rows, key)
+            for key in (model_stats_rows[0].keys() if model_stats_rows else [])
         },
     }
 
@@ -336,6 +354,7 @@ def run_decode_micro_profile(
     address_cmp_rows: List[Dict[str, float]] = []
     coverage_rows: List[Dict[str, float]] = []
     prefetch_stats_rows: List[Dict[str, float]] = []
+    model_stats_rows: List[Dict[str, float]] = []
 
     def run_baseline_decode(prefill_rows, decode_rows):
         last = None
@@ -465,6 +484,7 @@ def run_decode_micro_profile(
         logit_max_abs_diff.append(torch.max(torch.abs(reference_out["logits"] - online_out["logits"])).item())
         if use_prefetch and prefetch_out is not None:
             logit_max_abs_diff.append(torch.max(torch.abs(reference_out["logits"] - prefetch_out["logits"])).item())
+        model_stats_rows.append(extract_scalar_rosa_stats(reference_out))
 
         for ref_addr, on_addr in zip(reference_addresses, online_addresses):
             ref_dict = {
@@ -508,6 +528,10 @@ def run_decode_micro_profile(
         "coverage": {
             key: average_metric(coverage_rows, key)
             for key in (coverage_rows[0].keys() if coverage_rows else [])
+        },
+        "model_stats": {
+            key: average_metric(model_stats_rows, key)
+            for key in (model_stats_rows[0].keys() if model_stats_rows else [])
         },
         "notes": "该 decode 指标是无 KV cache 的单步 microbenchmark，主要用于比较 ROSA 分支开销与 online/reference 一致性。",
     }
@@ -591,6 +615,7 @@ def build_report(args) -> Dict[str, Any]:
             "rosa_backend": args.rosa_backend,
             "rosa_min_match_len": args.rosa_min_match_len,
             "rosa_inject_layers": args.rosa_inject_layers,
+            "rosa_inject_layer_ids": rosa_mod.parse_int_csv_arg(args.rosa_inject_layer_ids),
             "rosa_scale": args.rosa_scale,
             "rosa_value_mode": args.rosa_value_mode,
             "rosa_context_gate": args.rosa_context_gate,
