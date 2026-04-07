@@ -7,8 +7,8 @@
 ## 当前迭代
 
 - 分支：`codex/online-rosa-p0-foundation`
-- 迭代主题：P1 运行时强化
-- 当前状态：已完成 P1-6 热点地址缓存，P1 主线任务全部完成
+- 迭代主题：在线主线重构准备
+- 当前状态：已完成旧主线 P1；新增 `ROSA_在线主线重构_TODO.md`，准备把 precompute 训练路径降级为 reference
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -52,9 +52,9 @@
 
 ## 下一任务
 
-1. 从 P2 开始评估 tokenizer compression / canonicalization 的切入点。
-2. 继续设计 token value -> memory value 的升级路线。
-3. 在更大样本上复查 P1 组合路径的训练收益与服务时延。
+1. 按 `ROSA_在线主线重构_TODO.md` 落地新的训练主线。
+2. 先实现 `AddressEngine.forward_seq()`，让训练在 teacher forcing 下在线生成整段地址。
+3. 再将 `DocChunkDataset` 从默认依赖 `rosa_precomputed_ids` 切换为默认只提供 token / memory。
 
 ## 自我验证清单
 

@@ -4,7 +4,7 @@
 
 - 已有基础：`train_qwen_llama_vs_rosa_v2.py` 中已实现 ROSA 的 `sam` 检索版本，并有基础回归测试。
 - 当前分支：`codex/online-rosa-p0-foundation`
-- 当前阶段：P1 运行时强化已收尾
+- 当前阶段：旧主线 P1 已收尾，准备进入在线主线重构
 
 ## 本轮任务
 
@@ -105,7 +105,8 @@
 
 - 可以直接运行新的 launch 做 P1 特性组合实验，或单独验证热点缓存。
 - 如果要验证 cache 行为，优先看 `prefill_hot_cache_token_hit_rate`、`decode_hot_cache_token_hit_rate` 和 p95。
-- 下一步进入 P2，优先考虑 tokenizer compression / canonicalization。
+- 已新增 `ROSA_在线主线重构_TODO.md`，旧 `doc_local/global precompute` 方案降级为 reference/fallback。
+- 下一步优先实现新的在线训练主线：`teacher forcing 并行主干 + AddressEngine.forward_seq() + 在线 side-branch 注入`。
 
 ## 备注
 
