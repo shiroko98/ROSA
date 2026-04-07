@@ -777,6 +777,333 @@ def _pad_filtered_mem(mem_row: List[int], pad_id: int) -> List[int]:
     return [x for x in mem_row if x != pad_id]
 
 
+@dataclass(frozen=True)
+class AddressMeta:
+    addr_id: int
+    raw_match_len: int
+    fired_match_len: int
+    valid_mask: bool
+    special_mask: bool = False
+    source_type: str = "token_exact"
+
+    @property
+    def hit_flag(self) -> bool:
+        return self.valid_mask
+
+
+@dataclass(frozen=True)
+class RosaStateSnapshot:
+    token_ids: Tuple[int, ...]
+    num_tokens: int
+    last_address: Optional[AddressMeta] = None
+
+
+def build_address_meta(
+    addr_id: int,
+    raw_match_len: int,
+    *,
+    min_match_len: int,
+    special_mask: bool = False,
+    source_type: str = "token_exact",
+) -> AddressMeta:
+    valid = addr_id >= 0 and raw_match_len >= min_match_len and not special_mask
+    fired = raw_match_len if valid else 0
+    return AddressMeta(
+        addr_id=addr_id if valid else -1,
+        raw_match_len=raw_match_len,
+        fired_match_len=fired,
+        valid_mask=valid,
+        special_mask=special_mask,
+        source_type=source_type,
+    )
+
+
+def exact_match_step_address(
+    history: Sequence[int],
+    token_id: int,
+    *,
+    min_match_len: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+    source_type: str = "token_exact",
+) -> AddressMeta:
+    special_ids = special_ids or set()
+    gi = len(history)
+    combined = list(history) + [token_id]
+
+    best_len = 0
+    best_j = -1
+    for j in range(gi):
+        if combined[j] != token_id:
+            continue
+        m = 1
+        while j - m >= 0 and gi - m >= 0 and combined[j - m] == combined[gi - m]:
+            m += 1
+        if m > best_len or (m == best_len and j > best_j):
+            best_len = m
+            best_j = j
+
+    addr_id = -1
+    special_mask = False
+    if best_j >= 0 and best_j + 1 < len(combined):
+        candidate = combined[best_j + 1]
+        if forbid_special_target and candidate in special_ids:
+            special_mask = True
+        else:
+            addr_id = candidate
+
+    return build_address_meta(
+        addr_id,
+        best_len,
+        min_match_len=min_match_len,
+        special_mask=special_mask,
+        source_type=source_type,
+    )
+
+
+class OnlineRosaState:
+    """
+    参考级在线 ROSA 状态机。
+    先保证 prefill / update_one 语义稳定，与现有整段 exact-match 定义逐 token 对齐；
+    后续再在这个接口下替换为更高性能的状态结构。
+    """
+
+    def __init__(
+        self,
+        *,
+        min_match_len: int = 1,
+        special_ids: Optional[set] = None,
+        forbid_special_target: bool = True,
+        source_type: str = "token_exact",
+    ):
+        self.min_match_len = min_match_len
+        self.special_ids = set(special_ids or set())
+        self.forbid_special_target = forbid_special_target
+        self.source_type = source_type
+        self.reset()
+
+    def reset(self) -> None:
+        self._token_ids: List[int] = []
+        self._last_address: Optional[AddressMeta] = None
+
+    def prefill(self, token_ids: Sequence[int]) -> List[AddressMeta]:
+        return [self.update_one(token_id) for token_id in token_ids]
+
+    def update_one(self, token_id: int) -> AddressMeta:
+        meta = exact_match_step_address(
+            self._token_ids,
+            token_id,
+            min_match_len=self.min_match_len,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+            source_type=self.source_type,
+        )
+        self._token_ids.append(token_id)
+        self._last_address = meta
+        return meta
+
+    def snapshot(self) -> RosaStateSnapshot:
+        return RosaStateSnapshot(
+            token_ids=tuple(self._token_ids),
+            num_tokens=len(self._token_ids),
+            last_address=self._last_address,
+        )
+
+
+def pack_address_meta_batch(
+    batch_meta: Sequence[Sequence[AddressMeta]],
+    *,
+    device: Optional[torch.device] = None,
+) -> Dict[str, torch.Tensor]:
+    bsz = len(batch_meta)
+    seqlen = max((len(row) for row in batch_meta), default=0)
+
+    addr_ids = torch.full((bsz, seqlen), -1, dtype=torch.long, device=device)
+    raw_match_lens = torch.zeros((bsz, seqlen), dtype=torch.long, device=device)
+    fired_match_lens = torch.zeros((bsz, seqlen), dtype=torch.long, device=device)
+    valid_mask = torch.zeros((bsz, seqlen), dtype=torch.bool, device=device)
+    special_mask = torch.zeros((bsz, seqlen), dtype=torch.bool, device=device)
+
+    for b, row in enumerate(batch_meta):
+        for i, meta in enumerate(row):
+            addr_ids[b, i] = meta.addr_id
+            raw_match_lens[b, i] = meta.raw_match_len
+            fired_match_lens[b, i] = meta.fired_match_len
+            valid_mask[b, i] = meta.valid_mask
+            special_mask[b, i] = meta.special_mask
+
+    return {
+        "addr_ids": addr_ids,
+        "raw_match_lens": raw_match_lens,
+        "fired_match_lens": fired_match_lens,
+        "valid_mask": valid_mask,
+        "special_mask": special_mask,
+    }
+
+
+def online_rosa_address_meta_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+) -> List[List[AddressMeta]]:
+    bsz, seqlen = input_ids.shape
+    special_ids = special_ids or set()
+    seqs = input_ids.detach().cpu().tolist()
+    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
+    out: List[List[AddressMeta]] = []
+
+    for b in range(bsz):
+        seq = seqs[b]
+        mem = _pad_filtered_mem(mems[b], pad_id)
+        row: List[AddressMeta] = []
+        state = OnlineRosaState(
+            min_match_len=min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+        if mem:
+            state.prefill(mem)
+        row.extend(state.prefill(seq))
+        out.append(row)
+    return out
+
+
+def naive_rosa_address_meta_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+) -> List[List[AddressMeta]]:
+    bsz, seqlen = input_ids.shape
+    special_ids = special_ids or set()
+    seqs = input_ids.detach().cpu().tolist()
+    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
+    out: List[List[AddressMeta]] = []
+
+    for b in range(bsz):
+        seq = seqs[b]
+        mem = _pad_filtered_mem(mems[b], pad_id)
+        combined = mem + seq
+        offset = len(mem)
+        row: List[AddressMeta] = []
+
+        for i in range(seqlen):
+            gi = offset + i
+            cur = combined[gi]
+            if cur < 0:
+                row.append(build_address_meta(-1, 0, min_match_len=min_match_len))
+                continue
+
+            best_len = 0
+            best_j = -1
+            for j in range(gi):
+                if combined[j] != cur:
+                    continue
+                m = 1
+                while j - m >= 0 and gi - m >= 0 and combined[j - m] == combined[gi - m]:
+                    m += 1
+                if m > best_len or (m == best_len and j > best_j):
+                    best_len = m
+                    best_j = j
+
+            addr_id = -1
+            special_mask = False
+            if best_j >= 0 and best_j + 1 < len(combined):
+                candidate = combined[best_j + 1]
+                if forbid_special_target and candidate in special_ids:
+                    special_mask = True
+                else:
+                    addr_id = candidate
+            row.append(
+                build_address_meta(
+                    addr_id,
+                    best_len,
+                    min_match_len=min_match_len,
+                    special_mask=special_mask,
+                )
+            )
+        out.append(row)
+
+    return out
+
+
+def sam_rosa_address_meta_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+) -> List[List[AddressMeta]]:
+    bsz, seqlen = input_ids.shape
+    special_ids = special_ids or set()
+    seqs = input_ids.detach().cpu().tolist()
+    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
+    out: List[List[AddressMeta]] = []
+
+    for b in range(bsz):
+        seq = seqs[b]
+        mem = _pad_filtered_mem(mems[b], pad_id)
+        combined = mem + seq
+        offset = len(mem)
+
+        preds, match_lens = sam_rosa_predict(combined, min_match_len=min_match_len)
+        sliced_preds = preds[offset:offset + seqlen]
+        sliced_match_lens = match_lens[offset:offset + seqlen]
+
+        row: List[AddressMeta] = []
+        for pred, raw_m in zip(sliced_preds, sliced_match_lens):
+            special_mask = pred >= 0 and forbid_special_target and pred in special_ids
+            row.append(
+                build_address_meta(
+                    pred,
+                    raw_m,
+                    min_match_len=min_match_len,
+                    special_mask=special_mask,
+                )
+            )
+        out.append(row)
+
+    return out
+
+
+def rosa_addressing_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+    backend: str = "sam",
+) -> Dict[str, torch.Tensor]:
+    if backend == "naive":
+        batch_meta = naive_rosa_address_meta_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+    elif backend == "sam":
+        batch_meta = sam_rosa_address_meta_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+    else:
+        raise ValueError(f"未知 rosa backend: {backend}")
+    return pack_address_meta_batch(batch_meta, device=input_ids.device)
+
+
 def sam_rosa_predict(seq: Sequence[int], min_match_len: int = 1) -> Tuple[List[int], List[int]]:
     n = len(seq)
     pred = [-1] * n
@@ -859,49 +1186,16 @@ def naive_rosa_retrieval_with_memory(
     special_ids: Optional[set] = None,
     forbid_special_target: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    bsz, seqlen = input_ids.shape
-    retrieved = torch.full_like(input_ids, -1)
-    fired_match_lens = torch.zeros_like(input_ids)
-    raw_best_lens = torch.zeros_like(input_ids)
-    special_ids = special_ids or set()
-
-    seqs = input_ids.detach().cpu().tolist()
-    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
-
-    for b in range(bsz):
-        seq = seqs[b]
-        mem = [x for x in mems[b] if x != pad_id]
-        combined = mem + seq
-        offset = len(mem)
-
-        for i in range(seqlen):
-            gi = offset + i
-            cur = combined[gi]
-            if cur < 0:
-                continue
-
-            best_len = 0
-            best_j = -1
-            for j in range(gi):
-                if combined[j] != cur:
-                    continue
-                m = 1
-                while j - m >= 0 and gi - m >= 0 and combined[j - m] == combined[gi - m]:
-                    m += 1
-                if m > best_len or (m == best_len and j > best_j):
-                    best_len = m
-                    best_j = j
-
-            raw_best_lens[b, i] = best_len
-
-            if best_j >= 0 and best_len >= min_match_len and best_j + 1 < len(combined):
-                target = combined[best_j + 1]
-                if forbid_special_target and target in special_ids:
-                    continue
-                retrieved[b, i] = target
-                fired_match_lens[b, i] = best_len
-
-    return retrieved.to(input_ids.device), fired_match_lens.to(input_ids.device), raw_best_lens.to(input_ids.device)
+    addressed = rosa_addressing_with_memory(
+        input_ids=input_ids,
+        memory_ids=memory_ids,
+        min_match_len=min_match_len,
+        pad_id=pad_id,
+        special_ids=special_ids,
+        forbid_special_target=forbid_special_target,
+        backend="naive",
+    )
+    return addressed["addr_ids"], addressed["fired_match_lens"], addressed["raw_match_lens"]
 
 
 def sam_rosa_retrieval_with_memory(
@@ -912,35 +1206,16 @@ def sam_rosa_retrieval_with_memory(
     special_ids: Optional[set] = None,
     forbid_special_target: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    bsz, seqlen = input_ids.shape
-    retrieved = torch.full_like(input_ids, -1)
-    fired_match_lens = torch.zeros_like(input_ids)
-    raw_best_lens = torch.zeros_like(input_ids)
-    special_ids = special_ids or set()
-
-    seqs = input_ids.detach().cpu().tolist()
-    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
-
-    for b in range(bsz):
-        seq = seqs[b]
-        mem = [x for x in mems[b] if x != pad_id]
-        combined = mem + seq
-        offset = len(mem)
-
-        preds, match_lens = sam_rosa_predict(combined, min_match_len=min_match_len)
-        sliced_preds = preds[offset:offset + seqlen]
-        sliced_match_lens = match_lens[offset:offset + seqlen]
-
-        for i, (pred, raw_m) in enumerate(zip(sliced_preds, sliced_match_lens)):
-            raw_best_lens[b, i] = raw_m
-            if pred < 0:
-                continue
-            if forbid_special_target and pred in special_ids:
-                continue
-            retrieved[b, i] = pred
-            fired_match_lens[b, i] = raw_m
-
-    return retrieved.to(input_ids.device), fired_match_lens.to(input_ids.device), raw_best_lens.to(input_ids.device)
+    addressed = rosa_addressing_with_memory(
+        input_ids=input_ids,
+        memory_ids=memory_ids,
+        min_match_len=min_match_len,
+        pad_id=pad_id,
+        special_ids=special_ids,
+        forbid_special_target=forbid_special_target,
+        backend="sam",
+    )
+    return addressed["addr_ids"], addressed["fired_match_lens"], addressed["raw_match_lens"]
 
 
 def rosa_retrieval_with_memory(
