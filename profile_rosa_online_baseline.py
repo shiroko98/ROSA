@@ -41,6 +41,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_min_match_len", type=int, default=2)
     parser.add_argument("--rosa_inject_layers", type=int, default=1)
     parser.add_argument("--rosa_scale", type=float, default=0.15)
+    parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_backend", type=str, default="sam", choices=["sam", "naive"])
     parser.add_argument("--rosa_allow_special_target", action="store_true")
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true")
@@ -186,6 +187,7 @@ def build_models(args, tokenizer, device: torch.device):
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
+        rosa_value_mode=args.rosa_value_mode,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -504,6 +506,7 @@ def build_report(args) -> Dict[str, Any]:
             "rosa_min_match_len": args.rosa_min_match_len,
             "rosa_inject_layers": args.rosa_inject_layers,
             "rosa_scale": args.rosa_scale,
+            "rosa_value_mode": args.rosa_value_mode,
         },
         "prefill": prefill_report,
         "decode_micro": decode_report,

@@ -14,6 +14,7 @@
 - [x] 抽象统一 AddressMeta 接口
 - [x] 搭建最小在线注入闭环
 - [x] 建立性能与正确性基线
+- [x] P1-1: 引入 per-layer Value Store
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -33,6 +34,8 @@
   - baseline
   - rosa_reference
   - rosa_online
+- `RosaFusedLM` 已支持 `--rosa_value_mode shared|per_layer`。
+- 新增 `RosaValueStore`，`per_layer` 模式下每个注入层独立 lookup value。
 - profiling 报告输出 `profile_report.json`，包含：
   - prefill 延迟 / tok/s
   - decode microbenchmark 延迟 / tok/s
@@ -48,15 +51,17 @@
 - `conda run -n model python -m unittest tests.test_profile_rosa_online_baseline`
 - `conda run -n model python -m unittest discover -s tests`
 - `conda run -n model python profile_rosa_online_baseline.py ...`（Qwen ckpt 小样本实跑）
-- 结果：共 20 个测试，全部通过；profiling 脚本已在真实 checkpoint 上跑通。
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_value_mode per_layer`（P1-1 smoke）
+- 结果：共 23 个测试，全部通过；profiling 脚本已在真实 checkpoint 上跑通。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
+  - `outputs/profile_smoke_per_layer_value/profile_report.json`
 
 ## 下一步
 
-- 可以直接运行 launch 做一次当前 `rosa_reference` vs `rosa_online` 的实验对比。
-- 需要注意：当前 decode 指标仍是“无 KV cache 的单步 microbenchmark”，主要用于 ROSA 分支路径对比。
+- 继续完成 P1-2 `context-aware gate`。
+- 完成后再补 P1 组合实验入口。
 
 ## 备注
 

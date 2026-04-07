@@ -198,6 +198,81 @@ class FairComparisonTests(unittest.TestCase):
         self.assertEqual(collect_batches(loader_a), collect_batches(loader_b))
 
 
+class RosaValueStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_per_layer_value_store_copies_shared_embeddings_on_init(self):
+        rosa_mod.set_seed(2026)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            inject_layers=2,
+            rosa_value_mode="per_layer",
+        )
+
+        self.assertIsNotNone(model.rosa_value_store.per_layer_tables)
+        for table in model.rosa_value_store.per_layer_tables:
+            self.assertTrue(torch.equal(table.weight, model.embed_tokens.weight))
+
+    def test_per_layer_value_store_matches_shared_path_at_init(self):
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        rosa_mod.set_seed(77)
+        shared_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=2,
+            rosa_scale=0.5,
+            rosa_value_mode="shared",
+        )
+        rosa_mod.set_seed(77)
+        per_layer_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=2,
+            rosa_scale=0.5,
+            rosa_value_mode="per_layer",
+        )
+
+        with torch.no_grad():
+            shared_out = shared_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+            per_layer_out = per_layer_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+
+        self.assertTrue(torch.allclose(shared_out["logits"], per_layer_out["logits"], atol=1e-6))
+        self.assertEqual(shared_out["rosa_value_per_layer"], 0.0)
+        self.assertEqual(per_layer_out["rosa_value_per_layer"], 1.0)
+
+    def test_per_layer_value_store_supports_layer_specific_lookup(self):
+        rosa_mod.set_seed(88)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            inject_layers=2,
+            rosa_value_mode="per_layer",
+        )
+        token_ids = torch.tensor([[5]], dtype=torch.long)
+
+        with torch.no_grad():
+            model.rosa_value_store.per_layer_tables[1].weight[5].fill_(3.14)
+
+        layer0_value = model.rosa_value_store.lookup(0, token_ids, shared_embedding=model.embed_tokens)
+        layer1_value = model.rosa_value_store.lookup(1, token_ids, shared_embedding=model.embed_tokens)
+
+        self.assertFalse(torch.equal(layer0_value, layer1_value))
+
+
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
         docs = [[1, 2, 1, 2, 3]]

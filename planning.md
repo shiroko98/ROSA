@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：P0 基础设施
-- 当前状态：已完成“在线状态/地址接口”“最小在线注入闭环”“性能与正确性基线”，下一步可进入更完整的实验对比与后续 P1 能力
+- 当前状态：已完成 P0 主线，并完成 P1-1 `per-layer Value Store`；下一步进入 P1-2 `context-aware gate`
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -35,13 +35,15 @@
 - 已补在线前向级测试，覆盖 prefill 后 decode、一段 prompt 从空状态在线前向、跨步状态推进。
 - 已新增 `profile_rosa_online_baseline.py`，输出 prefill / decode microbenchmark / 地址一致性 / 覆盖率基线报告。
 - 已新增 VS Code launch 配置，可直接跑 smoke 基线与 Qwen checkpoint 对比实验。
+- 已在 `RosaFusedLM` 中新增 `RosaValueStore`，支持 `shared` / `per_layer` 两种 value 模式。
+- `per_layer` 模式下每个注入层都有独立 value table，初始化时从共享词嵌入复制权重，便于平滑起步。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 基于新的 profiling 报告跑一次更完整的当前 ROSA vs online ROSA 对比实验。
-2. 整理结果后决定是否进入 P1 的 per-layer Value Store。
-3. 如果继续打 P0，可补更贴近 serving 的 KV cache / decode runtime 骨架。
+1. 完成 P1-2：加入 Engram 风格的 context-aware gate。
+2. 为 gate 增加统计指标与实验入口。
+3. 再补一轮 launch / profiling 配置，方便直接做 P1 组合实验。
 
 ## 自我验证清单
 

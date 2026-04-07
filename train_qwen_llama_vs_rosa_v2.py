@@ -777,6 +777,58 @@ def _pad_filtered_mem(mem_row: List[int], pad_id: int) -> List[int]:
     return [x for x in mem_row if x != pad_id]
 
 
+class RosaValueStore(nn.Module):
+    """ROSA value lookup 抽象层：shared embedding 或 per-layer value table。"""
+
+    def __init__(
+        self,
+        *,
+        vocab_size: int,
+        dim: int,
+        inject_layers: int,
+        mode: str = "shared",
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.inject_layers = inject_layers
+        self.mode = mode
+
+        if mode == "shared":
+            self.per_layer_tables = None
+        elif mode == "per_layer":
+            self.per_layer_tables = nn.ModuleList(
+                [nn.Embedding(vocab_size, dim) for _ in range(max(0, inject_layers))]
+            )
+        else:
+            raise ValueError(f"未知 rosa_value_mode: {mode}")
+
+    @property
+    def is_per_layer(self) -> bool:
+        return self.mode == "per_layer"
+
+    def copy_shared_weights_(self, shared_embedding: nn.Embedding) -> None:
+        if not self.is_per_layer or self.per_layer_tables is None:
+            return
+        with torch.no_grad():
+            for table in self.per_layer_tables:
+                table.weight.copy_(shared_embedding.weight)
+
+    def lookup(
+        self,
+        layer_idx: int,
+        addr_ids: torch.Tensor,
+        *,
+        shared_embedding: nn.Embedding,
+    ) -> torch.Tensor:
+        addr_ids_safe = addr_ids.clamp_min(0)
+        if not self.is_per_layer:
+            return shared_embedding(addr_ids_safe)
+        if self.per_layer_tables is None or layer_idx >= len(self.per_layer_tables):
+            raise IndexError(f"layer_idx={layer_idx} 超出 RosaValueStore 可用层数。")
+        return self.per_layer_tables[layer_idx](addr_ids_safe)
+
+
 @dataclass(frozen=True)
 class AddressMeta:
     addr_id: int
@@ -1418,6 +1470,7 @@ class RosaFusedLM(BaseLM):
         min_match_len: int = 1,
         inject_layers: int = 2,
         rosa_scale: float = 0.25,
+        rosa_value_mode: str = "shared",
         special_ids: Optional[set] = None,
         forbid_special_target: bool = True,
         use_match_len_gate: bool = True,
@@ -1428,9 +1481,17 @@ class RosaFusedLM(BaseLM):
         self.min_match_len = min_match_len
         self.inject_layers = inject_layers
         self.rosa_scale = rosa_scale
+        self.rosa_value_mode = rosa_value_mode
         self.special_ids = special_ids or set()
         self.forbid_special_target = forbid_special_target
         self.use_match_len_gate = use_match_len_gate
+        self.rosa_value_store = RosaValueStore(
+            vocab_size=cfg.vocab_size,
+            dim=cfg.dim,
+            inject_layers=inject_layers,
+            mode=rosa_value_mode,
+        )
+        self.rosa_value_store.copy_shared_weights_(self.embed_tokens)
 
     def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
         return build_online_rosa_batch_state(
@@ -1487,26 +1548,30 @@ class RosaFusedLM(BaseLM):
             )
 
         active = (rosa_ids >= 0)
-        rosa_ids_safe = rosa_ids.clamp_min(0)
-        rosa_emb = self.embed_tokens(rosa_ids_safe)
 
         if self.use_match_len_gate:
             # 比硬阈值更稳的软门控：m 越大，权重越强
             len_scale = torch.log1p(fired_match_lens.float()).unsqueeze(-1)
         else:
             len_scale = torch.ones_like(fired_match_lens, dtype=torch.float).unsqueeze(-1)
-
-        rosa_resid = rosa_emb * len_scale * self.rosa_scale
-        rosa_resid = rosa_resid * active.unsqueeze(-1)
+        active_mask = active.unsqueeze(-1)
 
         for layer_idx, blk in enumerate(self.layers):
             if layer_idx < self.inject_layers:
+                rosa_value = self.rosa_value_store.lookup(
+                    layer_idx,
+                    rosa_ids,
+                    shared_embedding=self.embed_tokens,
+                )
+                rosa_resid = rosa_value * len_scale * self.rosa_scale
+                rosa_resid = rosa_resid * active_mask
                 x = x + rosa_resid
             x = blk(x, attn_mask)
         x = self.norm(x)
 
         raw_has_match = raw_best_lens.gt(0)
         stats = {
+            "rosa_value_per_layer": 1.0 if self.rosa_value_store.is_per_layer else 0.0,
             "rosa_fire_coverage": active.float().mean().item(),
             "rosa_fired_avg_match_len": fired_match_lens[active].float().mean().item() if active.any() else 0.0,
             "rosa_raw_match_coverage": raw_has_match.float().mean().item(),
@@ -1816,6 +1881,8 @@ def main():
                         help="建议训练时先从 1 开始，让 side-branch 先学会使用 ROSA 信号。")
     parser.add_argument("--rosa_inject_layers", type=int, default=2)
     parser.add_argument("--rosa_scale", type=float, default=0.25)
+    parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"],
+                        help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
     parser.add_argument("--rosa_allow_special_target", action="store_true")
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true",
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
@@ -1888,6 +1955,7 @@ def main():
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
+    print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
     train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
@@ -1933,6 +2001,7 @@ def main():
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
+        rosa_value_mode=args.rosa_value_mode,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -1977,6 +2046,7 @@ def main():
         min_match_len=args.rosa_min_match_len,
         inject_layers=args.rosa_inject_layers,
         rosa_scale=args.rosa_scale,
+        rosa_value_mode=args.rosa_value_mode,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -2008,6 +2078,7 @@ def main():
             "min_match_len": args.rosa_min_match_len,
             "inject_layers": args.rosa_inject_layers,
             "scale": args.rosa_scale,
+            "value_mode": args.rosa_value_mode,
         },
         "dataset": {
             "source": dataset_source,

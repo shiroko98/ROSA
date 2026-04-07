@@ -26,6 +26,13 @@ git log --oneline -5
   - `RosaFusedLM.forward_online(input_ids, rosa_online_state=...)`
 - 当前版本仍使用共享 `embed_tokens` 作为 value，适合先验证在线路径与语义一致性。
 
+## Per-Layer Value Store
+
+- 训练/评测开关：`--rosa_value_mode shared|per_layer`
+- `shared`：复用 `embed_tokens`
+- `per_layer`：每个注入层使用独立 value table
+- 当前初始化策略：`per_layer` value table 从共享词嵌入复制初值，方便和旧路径做平滑对比
+
 ## Profiling 基线
 
 - profiling 脚本：`profile_rosa_online_baseline.py`
