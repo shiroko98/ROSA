@@ -8,10 +8,11 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：P0 基础设施
-- 当前状态：已完成第一轮在线状态与地址接口落地，下一步可进入“最小在线注入闭环”
+- 当前状态：已完成“在线状态/地址接口”和“最小在线注入闭环”，下一步可进入性能与正确性基线
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
+  - 搭建最小在线注入闭环
 
 ## 本轮步骤
 
@@ -25,10 +26,20 @@
 ## 本轮结果
 
 - 已新增 `AddressMeta` / `RosaStateSnapshot` / `OnlineRosaState`。
+- 已新增 `OnlineRosaBatchState` 与 `build_online_rosa_batch_state()`。
 - 已新增 `rosa_addressing_with_memory()`，把地址生成与 value 消费初步解耦。
 - 已保留独立 `naive` reference 路径，并单独提供在线 state 路径用于逐 token 对齐验证。
+- 已在 `RosaFusedLM` 中新增 `init_online_state()` / `forward_online()`，可在 decode 场景直接消费在线状态。
+- 最小在线闭环仍沿用共享 `embed_tokens` 作为 value，并使用单层早期注入配置完成验证。
 - 已补 `tests/test_rosa_online_state.py`，覆盖逐 token 对齐、special 过滤、snapshot/reset。
+- 已补在线前向级测试，覆盖 prefill 后 decode、一段 prompt 从空状态在线前向、跨步状态推进。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
+
+## 下一任务
+
+1. 建立 P0 的性能与正确性基线。
+2. 补 profiling / baseline 脚本与日志指标。
+3. 记录 TTFT、decode tok/s、match coverage、fire coverage、平均 match_len。
 
 ## 自我验证清单
 

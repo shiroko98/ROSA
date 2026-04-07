@@ -117,5 +117,100 @@ class OnlineRosaStateTests(unittest.TestCase):
         self.assertIsNone(snap_after.last_address)
 
 
+class OnlineInjectionLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_online_batch_state_prefill_then_decode_matches_memory_mode(self):
+        rosa_mod.set_seed(2026)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+        )
+        model.eval()
+
+        memory_ids = torch.tensor([[1, 2, 1]], dtype=torch.long)
+        input_ids = torch.tensor([[2]], dtype=torch.long)
+
+        with torch.no_grad():
+            ref = model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+
+            online_state = model.init_online_state(batch_size=1)
+            online_state.prefill(memory_ids, pad_id=0)
+            online = model.forward_online(input_ids=input_ids, rosa_online_state=online_state)
+
+        self.assertTrue(torch.allclose(ref["logits"], online["logits"], atol=1e-6))
+        self.assertAlmostEqual(ref["rosa_fire_coverage"], online["rosa_fire_coverage"], places=6)
+        self.assertAlmostEqual(ref["rosa_fired_avg_match_len"], online["rosa_fired_avg_match_len"], places=6)
+        self.assertAlmostEqual(ref["rosa_raw_match_coverage"], online["rosa_raw_match_coverage"], places=6)
+        self.assertAlmostEqual(ref["rosa_raw_avg_best_len"], online["rosa_raw_avg_best_len"], places=6)
+
+        snap = online_state.snapshot()[0]
+        self.assertEqual(snap.token_ids, (1, 2, 1, 2))
+        self.assertIsNotNone(snap.last_address)
+        self.assertEqual(snap.last_address.addr_id, 1)
+        self.assertEqual(snap.last_address.fired_match_len, 2)
+
+    def test_online_forward_can_process_prompt_sequence_from_empty_state(self):
+        rosa_mod.set_seed(2027)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+        )
+        model.eval()
+
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        empty_memory = torch.empty((1, 0), dtype=torch.long)
+
+        with torch.no_grad():
+            ref = model(input_ids=input_ids, rosa_memory_ids=empty_memory)
+
+            online_state = model.init_online_state(batch_size=1)
+            online = model.forward_online(input_ids=input_ids, rosa_online_state=online_state)
+
+        self.assertTrue(torch.allclose(ref["logits"], online["logits"], atol=1e-6))
+        snap = online_state.snapshot()[0]
+        self.assertEqual(snap.token_ids, (1, 2, 1, 2, 3))
+        self.assertEqual(snap.last_address.raw_match_len, 0)
+
+    def test_online_decode_state_keeps_advancing_across_steps(self):
+        rosa_mod.set_seed(2028)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+        )
+        model.eval()
+
+        online_state = model.init_online_state(batch_size=1)
+        online_state.prefill(torch.tensor([[1, 2, 1]], dtype=torch.long), pad_id=0)
+
+        with torch.no_grad():
+            model.forward_online(torch.tensor([[2]], dtype=torch.long), rosa_online_state=online_state)
+            model.forward_online(torch.tensor([[3]], dtype=torch.long), rosa_online_state=online_state)
+
+        snap = online_state.snapshot()[0]
+        self.assertEqual(snap.token_ids, (1, 2, 1, 2, 3))
+        self.assertIsNotNone(snap.last_address)
+        self.assertEqual(snap.last_address.addr_id, -1)
+        self.assertEqual(snap.last_address.raw_match_len, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

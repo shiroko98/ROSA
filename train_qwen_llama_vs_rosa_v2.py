@@ -910,6 +910,107 @@ class OnlineRosaState:
         )
 
 
+def _coerce_batch_token_rows(token_ids: Any) -> List[List[int]]:
+    if isinstance(token_ids, torch.Tensor):
+        if token_ids.dim() == 1:
+            return [token_ids.detach().cpu().tolist()]
+        if token_ids.dim() == 2:
+            return token_ids.detach().cpu().tolist()
+        raise ValueError("token_ids tensor 只能是 1D 或 2D。")
+    return [list(row) for row in token_ids]
+
+
+class OnlineRosaBatchState:
+    """批量在线 ROSA 状态，提供 prefill + decode/update 最小闭环。"""
+
+    def __init__(self, states: Sequence[OnlineRosaState]):
+        self.states = list(states)
+
+    @classmethod
+    def create(
+        cls,
+        batch_size: int,
+        *,
+        min_match_len: int = 1,
+        special_ids: Optional[set] = None,
+        forbid_special_target: bool = True,
+        source_type: str = "token_exact",
+    ) -> "OnlineRosaBatchState":
+        return cls(
+            [
+                OnlineRosaState(
+                    min_match_len=min_match_len,
+                    special_ids=special_ids,
+                    forbid_special_target=forbid_special_target,
+                    source_type=source_type,
+                )
+                for _ in range(batch_size)
+            ]
+        )
+
+    def reset(self) -> None:
+        for state in self.states:
+            state.reset()
+
+    def prefill(self, token_ids: Any, *, pad_id: Optional[int] = None) -> None:
+        rows = _coerce_batch_token_rows(token_ids)
+        if len(rows) != len(self.states):
+            raise ValueError("prefill 的 batch 大小必须与 OnlineRosaBatchState 中的 state 数量一致。")
+        for state, row in zip(self.states, rows):
+            filtered = [tok for tok in row if pad_id is None or tok != pad_id]
+            if filtered:
+                state.prefill(filtered)
+
+    def address_tokens(
+        self,
+        token_ids: Any,
+        *,
+        pad_id: Optional[int] = None,
+        device: Optional[torch.device] = None,
+    ) -> Dict[str, torch.Tensor]:
+        rows = _coerce_batch_token_rows(token_ids)
+        if len(rows) != len(self.states):
+            raise ValueError("address_tokens 的 batch 大小必须与 OnlineRosaBatchState 中的 state 数量一致。")
+
+        batch_meta: List[List[AddressMeta]] = []
+        for state, row in zip(self.states, rows):
+            row_meta: List[AddressMeta] = []
+            for tok in row:
+                if pad_id is not None and tok == pad_id:
+                    row_meta.append(
+                        build_address_meta(
+                            -1,
+                            0,
+                            min_match_len=state.min_match_len,
+                            source_type=state.source_type,
+                        )
+                    )
+                    continue
+                row_meta.append(state.update_one(tok))
+            batch_meta.append(row_meta)
+        return pack_address_meta_batch(batch_meta, device=device)
+
+    def snapshot(self) -> List[RosaStateSnapshot]:
+        return [state.snapshot() for state in self.states]
+
+
+def build_online_rosa_batch_state(
+    batch_size: int,
+    *,
+    min_match_len: int = 1,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+    source_type: str = "token_exact",
+) -> OnlineRosaBatchState:
+    return OnlineRosaBatchState.create(
+        batch_size,
+        min_match_len=min_match_len,
+        special_ids=special_ids,
+        forbid_special_target=forbid_special_target,
+        source_type=source_type,
+    )
+
+
 def pack_address_meta_batch(
     batch_meta: Sequence[Sequence[AddressMeta]],
     *,
@@ -1263,6 +1364,7 @@ class BaseLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1281,6 +1383,7 @@ class BaseLM(nn.Module):
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1288,6 +1391,7 @@ class BaseLM(nn.Module):
         hidden = self.forward_hidden(
             input_ids,
             rosa_memory_ids=rosa_memory_ids,
+            rosa_online_state=rosa_online_state,
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
@@ -1328,10 +1432,19 @@ class RosaFusedLM(BaseLM):
         self.forbid_special_target = forbid_special_target
         self.use_match_len_gate = use_match_len_gate
 
+    def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
+        return build_online_rosa_batch_state(
+            batch_size,
+            min_match_len=self.min_match_len,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+        )
+
     def forward_hidden(
         self,
         input_ids: torch.Tensor,
         rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1353,6 +1466,15 @@ class RosaFusedLM(BaseLM):
                 if rosa_precomputed_raw_best_lens is not None
                 else fired_match_lens
             )
+        elif rosa_online_state is not None:
+            addressed = rosa_online_state.address_tokens(
+                input_ids,
+                pad_id=self.pad_id,
+                device=input_ids.device,
+            )
+            rosa_ids = addressed["addr_ids"]
+            fired_match_lens = addressed["fired_match_lens"]
+            raw_best_lens = addressed["raw_match_lens"]
         else:
             rosa_ids, fired_match_lens, raw_best_lens = rosa_retrieval_with_memory(
                 input_ids=input_ids,
@@ -1397,6 +1519,7 @@ class RosaFusedLM(BaseLM):
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1404,6 +1527,7 @@ class RosaFusedLM(BaseLM):
         hidden, stats = self.forward_hidden(
             input_ids,
             rosa_memory_ids=rosa_memory_ids,
+            rosa_online_state=rosa_online_state,
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
@@ -1419,6 +1543,18 @@ class RosaFusedLM(BaseLM):
             )
             out["loss"] = loss
         return out
+
+    def forward_online(
+        self,
+        input_ids: torch.Tensor,
+        rosa_online_state: OnlineRosaBatchState,
+        labels: Optional[torch.Tensor] = None,
+    ):
+        return self.forward(
+            input_ids=input_ids,
+            labels=labels,
+            rosa_online_state=rosa_online_state,
+        )
 
 
 def labels_with_ignore(labels: torch.Tensor, pad_id: int) -> torch.Tensor:

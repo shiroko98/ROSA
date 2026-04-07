@@ -12,6 +12,7 @@
 - [x] 建立本地规划/进度/操作文档
 - [x] 实现 Online ROSA State
 - [x] 抽象统一 AddressMeta 接口
+- [x] 搭建最小在线注入闭环
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -21,16 +22,24 @@
   - `AddressMeta`
   - `RosaStateSnapshot`
   - `OnlineRosaState`
+  - `OnlineRosaBatchState`
   - `rosa_addressing_with_memory()`
 - 现有 `naive` / `sam` 检索已复用统一地址抽象，保留旧的 tensor 返回接口。
 - `naive` reference 与在线 state 路径已分离，后续可继续做独立一致性验证。
+- `RosaFusedLM` 已支持 `init_online_state()` 与 `forward_online()`。
+- 最小 online decode 注入闭环已跑通：prefill 后可逐步 `forward_online()`，并复用共享 embedding + match_len gate。
 - 新增测试文件 `tests/test_rosa_online_state.py`。
 
 ## 自我验证记录
 
 - `conda run -n model python -m unittest tests.test_rosa_online_state`
 - `conda run -n model python -m unittest discover -s tests`
-- 结果：共 16 个测试，全部通过。
+- 结果：共 19 个测试，全部通过。
+
+## 下一步
+
+- P0 剩余任务：建立性能与正确性基线。
+- 重点指标：TTFT、decode tok/s、单步额外延迟、match coverage、fire coverage、平均 match_len。
 
 ## 备注
 

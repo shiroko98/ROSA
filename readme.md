@@ -18,6 +18,14 @@ git status --short --branch
 git log --oneline -5
 ```
 
+## Online ROSA 最小闭环
+
+- 入口能力：
+  - `RosaFusedLM.init_online_state(batch_size)`
+  - `OnlineRosaBatchState.prefill(token_ids, pad_id=...)`
+  - `RosaFusedLM.forward_online(input_ids, rosa_online_state=...)`
+- 当前版本仍使用共享 `embed_tokens` 作为 value，适合先验证在线路径与语义一致性。
+
 ## 当前开发约定
 
 - 新任务统一在 `codex/*` 分支上进行。
