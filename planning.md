@@ -55,6 +55,8 @@
 1. 按 `ROSA_在线主线重构_TODO.md` 落地新的训练主线。
 2. 先实现 `AddressEngine.forward_seq()`，让训练在 teacher forcing 下在线生成整段地址。
 3. 再将 `DocChunkDataset` 从默认依赖 `rosa_precomputed_ids` 切换为默认只提供 token / memory。
+4. 中期按新 TODO 接入 `ROSA-DocMemory`，让外部检索文档可作为 side memory。
+5. 再进一步规划 `ROSA × Engram` 的 hybrid memory 方案。
 
 ## 自我验证清单
 

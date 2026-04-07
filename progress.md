@@ -106,6 +106,9 @@
 - 可以直接运行新的 launch 做 P1 特性组合实验，或单独验证热点缓存。
 - 如果要验证 cache 行为，优先看 `prefill_hot_cache_token_hit_rate`、`decode_hot_cache_token_hit_rate` 和 p95。
 - 已新增 `ROSA_在线主线重构_TODO.md`，旧 `doc_local/global precompute` 方案降级为 reference/fallback。
+- 已在在线主线 TODO 中补充：
+  - `ROSA-DocMemory`：外部检索文档作为 side memory
+  - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
 - 下一步优先实现新的在线训练主线：`teacher forcing 并行主干 + AddressEngine.forward_seq() + 在线 side-branch 注入`。
 
 ## 备注

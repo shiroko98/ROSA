@@ -31,10 +31,12 @@
 | P1 | 用真正的在线状态结构替换参考级 list-state | 高性能 `OnlineRosaState` | 不再依赖 `exact_match_step_address(list)` 做主线 | 状态机构造与 fallback/clone 逻辑复杂 | 将当前 reference state 保留为基线；新增 suffix automaton state 实现并做逐 token 对齐 |
 | P1 | 让 prefetch / staging / hot cache 服务于新主线 | 在线推理流水线优化版 | decode 中能观测到稳定的 prefetch hit / cache hit，并且不破坏语义 | 当前 value backend 过轻，优化收益不容易显现 | 保留 stats 优先；先做正确性与稳定性，再评估真实收益 |
 | P1 | 训练/推理统一注入层搜索协议 | 一套可复用的层位实验配置 | 训练和 profile 都支持 `inject_layer_ids`，结论可复现 | 训练期最好层位与推理期最好层位未必一致 | 扩展扫描脚本，增加训练小样本 sweep 与 profile 对齐报告 |
+| P2 | 接入外部文档 memory（ROSA-DocMemory） | 类 RAG 的 ROSA 文档参考路径 | 推理时可将检索到的文档作为 `optional_memory` 注入 `RosaState`；prefill/decode 可稳定使用 | 文档排序、截断和 memory 污染会影响命中质量 | 先支持 `retrieved_docs -> token stream memory`；再考虑 bookmark / anchor / compression |
 | P2 | 训练 V2：per-layer ValueStore 正式接入在线训练主线 | 在线训练版大 ValueStore | `per_layer` 成为在线训练默认实验对象之一 | 参数量和显存/主存成本上升 | 将 `per_layer` 从“功能可用”推进到“主线训练可复现” |
 | P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
 | P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
 | P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |
+| P2 | ROSA × Engram 融合路线 | 文档 memory 与参数化 memory 共存的 hybrid 方案 | 同时支持 `external doc memory` 与 `learned memory table` 两条 value 分支，并可由 gate 融合 | 两类 memory 的优先级与冲突处理复杂 | 先实现 `doc memory branch + learned branch` 的双分支 payload；再研究共享 gate / branch-specific gate |
 | P3 | 服务化 request 生命周期与混批 | 面向 serving 的 ROSA 运行时 | `RosaState`、prefetch、cache、bookmark 在并发请求下生命周期稳定 | 与现有推理框架集成难度高 | 先设计 request API、状态快照、回收与 fallback 策略 |
 
 ## 里程碑建议
@@ -55,13 +57,22 @@
 ### 里程碑 C：更大 Memory 系统
 
 1. `per-layer ValueStore` 成为主线实验对象
-2. compression / memory value / sparse gather 逐步接入
-3. prefetch / cache 在重 value backend 下体现真实收益
+2. `ROSA-DocMemory` 接入外部检索文档作为 side memory
+3. compression / memory value / sparse gather 逐步接入
+4. prefetch / cache 在重 value backend 下体现真实收益
+
+### 里程碑 D：Hybrid Memory
+
+1. 外部文档 memory 与 learned memory table 能共存
+2. gate 可以协调外部 memory 与参数化 memory
+3. 形成 ROSA × Engram 的混合 memory 架构
 
 ## 当前结论
 
 - 旧 `doc_local/global` 方案：保留，但作为 reference/fallback，不再作为未来训练主线。
 - 新主线：`teacher forcing 并行主干 + 在线地址 side-branch + 少层注入`。
+- 中期扩展：在这条主线上接入 `ROSA-DocMemory`，使外部检索文档可以像 RAG 一样成为 side memory。
+- 进一步扩展：参考 Engram，将 `external doc memory` 与 `learned memory table` 组合成 hybrid conditional memory。
 - 当前代码基础已经具备较大一部分骨架：
   - 地址抽象
   - value store
