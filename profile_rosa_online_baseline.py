@@ -43,6 +43,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_scale", type=float, default=0.15)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_context_gate", action="store_true")
+    parser.add_argument("--rosa_prefetch", action="store_true")
+    parser.add_argument("--rosa_prefetch_pinned", action="store_true")
     parser.add_argument("--rosa_backend", type=str, default="sam", choices=["sam", "naive"])
     parser.add_argument("--rosa_allow_special_target", action="store_true")
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true")
@@ -319,6 +321,8 @@ def run_decode_micro_profile(
     device: torch.device,
     warmup_iters: int,
     measure_iters: int,
+    use_prefetch: bool = False,
+    use_pinned_prefetch: bool = False,
 ) -> Dict[str, Any]:
     baseline_times: List[float] = []
     reference_times: List[float] = []
@@ -326,9 +330,12 @@ def run_decode_micro_profile(
     baseline_tokens: List[int] = []
     reference_tokens: List[int] = []
     online_tokens: List[int] = []
+    prefetch_times: List[float] = []
+    prefetch_tokens: List[int] = []
     logit_max_abs_diff: List[float] = []
     address_cmp_rows: List[Dict[str, float]] = []
     coverage_rows: List[Dict[str, float]] = []
+    prefetch_stats_rows: List[Dict[str, float]] = []
 
     def run_baseline_decode(prefill_rows, decode_rows):
         last = None
@@ -376,6 +383,44 @@ def run_decode_micro_profile(
             all_address.append(addressed)
         return last, all_address
 
+    def run_prefetched_decode(prefill_rows, decode_rows):
+        schedule_state = rosa_model.init_online_state(len(prefill_rows))
+        prefill_tensor = torch.tensor(prefill_rows, dtype=torch.long)
+        schedule_state.prefill(prefill_tensor, pad_id=pad_id)
+        prefetcher = rosa_model.init_prefetcher(
+            use_async=True,
+            use_pinned_memory=use_pinned_prefetch,
+            max_workers=1,
+        )
+        address_batches = []
+        step_tensors = []
+        for step_idx in range(len(decode_rows[0])):
+            step_values = [[row[step_idx]] for row in decode_rows]
+            step_ids = torch.tensor(step_values, dtype=torch.long, device=device)
+            step_tensors.append(step_ids)
+            address_batch = rosa_model.schedule_rosa_prefetch(
+                prefetcher,
+                f"step-{step_idx}",
+                step_ids,
+                rosa_online_state=schedule_state,
+            )
+            address_batches.append(address_batch)
+
+        last = None
+        all_address = []
+        for step_idx, step_ids in enumerate(step_tensors):
+            payload = rosa_model.consume_rosa_prefetch(
+                prefetcher,
+                f"step-{step_idx}",
+                device=device,
+                fallback_address_batch=address_batches[step_idx],
+            )
+            last = rosa_model.forward_prefetched(step_ids, payload)
+            all_address.append(payload.address)
+        stats = prefetcher.stats()
+        prefetcher.shutdown()
+        return last, all_address, stats
+
     for batch in batches:
         prefill_rows = [row["prefill"] for row in batch]
         decode_rows = [row["decode"] for row in batch]
@@ -399,28 +444,59 @@ def run_decode_micro_profile(
             measure_iters=measure_iters,
             device=device,
         )
+        if use_prefetch:
+            (prefetch_out, prefetch_addresses, prefetch_stats), pf_times = bench_callable(
+                lambda: run_prefetched_decode(prefill_rows, decode_rows),
+                warmup_iters=warmup_iters,
+                measure_iters=measure_iters,
+                device=device,
+            )
+        else:
+            prefetch_out, prefetch_addresses, prefetch_stats, pf_times = None, None, None, []
 
         baseline_times.extend(base_times)
         reference_times.extend(ref_times)
         online_times.extend(on_times)
+        prefetch_times.extend(pf_times)
         baseline_tokens.extend([token_count] * len(base_times))
         reference_tokens.extend([token_count] * len(ref_times))
         online_tokens.extend([token_count] * len(on_times))
+        prefetch_tokens.extend([token_count] * len(pf_times))
         logit_max_abs_diff.append(torch.max(torch.abs(reference_out["logits"] - online_out["logits"])).item())
+        if use_prefetch and prefetch_out is not None:
+            logit_max_abs_diff.append(torch.max(torch.abs(reference_out["logits"] - prefetch_out["logits"])).item())
 
         for ref_addr, on_addr in zip(reference_addresses, online_addresses):
-            address_cmp_rows.append(compare_tensor_dicts(ref_addr, on_addr))
+            ref_dict = {
+                "addr_ids": ref_addr["addr_ids"] if isinstance(ref_addr, dict) else ref_addr.addr_ids,
+                "raw_match_lens": ref_addr["raw_match_lens"] if isinstance(ref_addr, dict) else ref_addr.raw_match_lens,
+                "fired_match_lens": ref_addr["fired_match_lens"] if isinstance(ref_addr, dict) else ref_addr.fired_match_lens,
+                "valid_mask": ref_addr["valid_mask"] if isinstance(ref_addr, dict) else ref_addr.valid_mask,
+                "special_mask": ref_addr["special_mask"] if isinstance(ref_addr, dict) else ref_addr.special_mask,
+            }
+            on_dict = {
+                "addr_ids": on_addr["addr_ids"] if isinstance(on_addr, dict) else on_addr.addr_ids,
+                "raw_match_lens": on_addr["raw_match_lens"] if isinstance(on_addr, dict) else on_addr.raw_match_lens,
+                "fired_match_lens": on_addr["fired_match_lens"] if isinstance(on_addr, dict) else on_addr.fired_match_lens,
+                "valid_mask": on_addr["valid_mask"] if isinstance(on_addr, dict) else on_addr.valid_mask,
+                "special_mask": on_addr["special_mask"] if isinstance(on_addr, dict) else on_addr.special_mask,
+            }
+            address_cmp_rows.append(compare_tensor_dicts(ref_dict, on_dict))
             coverage_rows.append(summarize_address_tensors(ref_addr))
+        if use_prefetch and prefetch_addresses is not None:
+            prefetch_stats_rows.append(prefetch_stats)
 
     timings = {
         "baseline": summarize_timings(baseline_times, baseline_tokens),
         "rosa_reference": summarize_timings(reference_times, reference_tokens),
         "rosa_online": summarize_timings(online_times, online_tokens),
     }
+    if use_prefetch:
+        timings["rosa_online_prefetch"] = summarize_timings(prefetch_times, prefetch_tokens)
     for mode in timings.values():
         mode["avg_ms_per_token"] = 1000.0 / mode["tokens_per_s"] if mode["tokens_per_s"] > 0 else 0.0
 
-    return {
+    report = {
         "timings": timings,
         "correctness": {
             "logit_max_abs_diff": max(logit_max_abs_diff) if logit_max_abs_diff else 0.0,
@@ -435,6 +511,12 @@ def run_decode_micro_profile(
         },
         "notes": "该 decode 指标是无 KV cache 的单步 microbenchmark，主要用于比较 ROSA 分支开销与 online/reference 一致性。",
     }
+    if use_prefetch and prefetch_stats_rows:
+        report["prefetch"] = {
+            key: average_metric(prefetch_stats_rows, key)
+            for key in prefetch_stats_rows[0].keys()
+        }
+    return report
 
 
 def build_report(args) -> Dict[str, Any]:
@@ -487,6 +569,8 @@ def build_report(args) -> Dict[str, Any]:
         device=device,
         warmup_iters=args.warmup_iters,
         measure_iters=args.measure_iters,
+        use_prefetch=args.rosa_prefetch,
+        use_pinned_prefetch=args.rosa_prefetch_pinned,
     )
 
     report = {
@@ -510,6 +594,8 @@ def build_report(args) -> Dict[str, Any]:
             "rosa_scale": args.rosa_scale,
             "rosa_value_mode": args.rosa_value_mode,
             "rosa_context_gate": args.rosa_context_gate,
+            "rosa_prefetch": args.rosa_prefetch,
+            "rosa_prefetch_pinned": args.rosa_prefetch_pinned,
         },
         "prefill": prefill_report,
         "decode_micro": decode_report,

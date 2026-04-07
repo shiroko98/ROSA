@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：P0 基础设施
-- 当前状态：已完成 P0 主线，并完成 P1-3 的调度拆分：地址先算、值后取、层内消费
+- 当前状态：已完成 P1-4 的预取 / staging 基础壳子，下一步进入层位扫描
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -41,13 +41,15 @@
 - gate 统计指标已接入模型输出：`rosa_avg_gate` / `rosa_gate_coverage` / `rosa_gate_hit`。
 - 已将运行时数据结构拆到 `rosa_runtime.py`，并新增 `RosaAddressBatch` / `RosaInjectionPayload`。
 - 已将 `RosaFusedLM` 拆成显式三段：`compute_rosa_address_batch()` -> `build_rosa_injection_payload()` -> `forward_hidden(..., rosa_payload=...)`。
+- 已新增 `RosaPrefetcher` / `RosaStagingBuffer`，支持 payload 预取、staging 与统计。
+- profiling 已支持 `--rosa_prefetch`，输出 `hit_rate` / `wait_ms` / `sync_fallbacks` 等预取指标。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 完成 P1-4：加入异步预取与 staging buffer。
-2. 在新的 payload 接口上挂预取统计与等待时间统计。
-3. 后续再补层位扫描与热点缓存。
+1. 完成 P1-5：层位扫描与插入策略搜索。
+2. 为层位扫描补实验脚本/launch 与推荐输出。
+3. 最后补热点地址缓存与统计。
 
 ## 自我验证清单
 

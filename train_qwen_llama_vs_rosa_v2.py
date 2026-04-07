@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from rosa_runtime import RosaAddressBatch, RosaInjectionPayload
+from rosa_runtime import RosaAddressBatch, RosaInjectionPayload, RosaPrefetcher
 
 try:
     from transformers import AutoTokenizer
@@ -1550,6 +1550,22 @@ class RosaFusedLM(BaseLM):
             forbid_special_target=self.forbid_special_target,
         )
 
+    def init_prefetcher(
+        self,
+        *,
+        use_async: bool = True,
+        use_pinned_memory: bool = False,
+        max_workers: int = 1,
+    ) -> RosaPrefetcher:
+        model_device = next(self.parameters()).device
+        return RosaPrefetcher(
+            builder=lambda address_batch: self.build_rosa_injection_payload(address_batch, device=model_device),
+            use_async=use_async,
+            supports_async=model_device.type == "cpu",
+            use_pinned_memory=use_pinned_memory and model_device.type == "cpu",
+            max_workers=max_workers,
+        )
+
     def compute_rosa_address_batch(
         self,
         input_ids: torch.Tensor,
@@ -1640,6 +1656,44 @@ class RosaFusedLM(BaseLM):
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
         )
         return self.build_rosa_injection_payload(address_batch, device=input_ids.device)
+
+    def schedule_rosa_prefetch(
+        self,
+        prefetcher: RosaPrefetcher,
+        request_key: str,
+        input_ids: torch.Tensor,
+        *,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+    ) -> RosaAddressBatch:
+        address_batch = self.compute_rosa_address_batch(
+            input_ids,
+            rosa_memory_ids=rosa_memory_ids,
+            rosa_online_state=rosa_online_state,
+            rosa_precomputed_ids=rosa_precomputed_ids,
+            rosa_precomputed_match_lens=rosa_precomputed_match_lens,
+            rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+        )
+        prefetcher.submit(request_key, address_batch)
+        return address_batch
+
+    def consume_rosa_prefetch(
+        self,
+        prefetcher: RosaPrefetcher,
+        request_key: str,
+        *,
+        device: torch.device,
+        fallback_address_batch: Optional[RosaAddressBatch] = None,
+    ) -> RosaInjectionPayload:
+        payload = prefetcher.consume(request_key, device=device)
+        if payload is not None:
+            return payload
+        if fallback_address_batch is None:
+            raise KeyError(f"未找到 request_key={request_key} 对应的预取 payload。")
+        return self.build_rosa_injection_payload(fallback_address_batch, device=device)
 
     def compute_rosa_context_gate(
         self,
@@ -1796,6 +1850,18 @@ class RosaFusedLM(BaseLM):
             input_ids,
             rosa_online_state=rosa_online_state,
         )
+        return self.forward(
+            input_ids=input_ids,
+            labels=labels,
+            rosa_payload=rosa_payload,
+        )
+
+    def forward_prefetched(
+        self,
+        input_ids: torch.Tensor,
+        rosa_payload: RosaInjectionPayload,
+        labels: Optional[torch.Tensor] = None,
+    ):
         return self.forward(
             input_ids=input_ids,
             labels=labels,

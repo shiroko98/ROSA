@@ -52,6 +52,19 @@ git log --oneline -5
   - `forward(..., rosa_payload=...)`
 - 这层接口是后续预取、缓存、层外调度的基础
 
+## Prefetch / Staging
+
+- 入口能力：
+  - `init_prefetcher()`
+  - `schedule_rosa_prefetch()`
+  - `consume_rosa_prefetch()`
+- profiling 开关：
+  - `--rosa_prefetch`
+  - `--rosa_prefetch_pinned`
+- 当前说明：
+  - CPU 路径支持异步预取
+  - GPU 路径先走安全同步回退，但统计接口一致
+
 ## Profiling 基线
 
 - profiling 脚本：`profile_rosa_online_baseline.py`
@@ -68,6 +81,7 @@ git log --oneline -5
 - `ROSA v2 - Online Baseline Profile (Qwen ckpt compare)`：用现有 Qwen checkpoint 直接比较 reference vs online。
 - `ROSA v2 - P1 Value+Gate Smoke (Qwen)`：直接训练一版 `per_layer + context_gate` 小实验。
 - `ROSA v2 - Online Baseline Profile (P1 Value+Gate Smoke)`：快速看 P1 组合路径是否跑通。
+- `ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)`：快速看 prefetch/staging 统计是否正常。
 
 ## 当前开发约定
 

@@ -650,6 +650,65 @@
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
+    },
+    {
+      "name": "ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/profile_rosa_online_baseline.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "python": "D:/anaconda/envs/model/python.exe",
+      "args": [
+        "--data_path",
+        "${workspaceFolder}/data/rosa_demo.txt",
+        "--data_format",
+        "text",
+        "--split_mode",
+        "line",
+        "--max_docs",
+        "4",
+        "--num_samples",
+        "4",
+        "--prefill_tokens",
+        "16",
+        "--decode_steps",
+        "4",
+        "--sample_stride",
+        "4",
+        "--batch_size",
+        "1",
+        "--warmup_iters",
+        "0",
+        "--measure_iters",
+        "3",
+        "--device",
+        "cpu",
+        "--arch_style",
+        "qwen",
+        "--seq_len",
+        "16",
+        "--dim",
+        "16",
+        "--n_layers",
+        "2",
+        "--n_heads",
+        "4",
+        "--n_kv_heads",
+        "4",
+        "--intermediate_size",
+        "32",
+        "--rosa_value_mode",
+        "per_layer",
+        "--rosa_context_gate",
+        "--rosa_prefetch",
+        "--out_dir",
+        "${workspaceFolder}/outputs/profile_p1_prefetch_smoke"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
     }
   ]
 }

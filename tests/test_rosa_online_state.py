@@ -272,6 +272,87 @@ class OnlineInjectionLoopTests(unittest.TestCase):
         self.assertAlmostEqual(direct["rosa_fire_coverage"], staged["rosa_fire_coverage"], places=6)
         self.assertAlmostEqual(direct["rosa_avg_gate"], staged["rosa_avg_gate"], places=6)
 
+    def test_prefetcher_can_stage_and_consume_payload(self):
+        rosa_mod.set_seed(2031)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+            rosa_value_mode="per_layer",
+            use_context_gate=True,
+        )
+        model.eval()
+
+        online_state = model.init_online_state(batch_size=1)
+        online_state.prefill(torch.tensor([[1, 2, 1]], dtype=torch.long), pad_id=0)
+        prefetch_state = model.init_online_state(batch_size=1)
+        prefetch_state.prefill(torch.tensor([[1, 2, 1]], dtype=torch.long), pad_id=0)
+        input_ids = torch.tensor([[2]], dtype=torch.long)
+        prefetcher = model.init_prefetcher(use_async=True, max_workers=1)
+
+        with torch.no_grad():
+            direct = model.forward_online(input_ids=input_ids, rosa_online_state=online_state)
+            address_batch = model.schedule_rosa_prefetch(
+                prefetcher,
+                "step-0",
+                input_ids,
+                rosa_online_state=prefetch_state,
+            )
+            payload = model.consume_rosa_prefetch(
+                prefetcher,
+                "step-0",
+                device=input_ids.device,
+                fallback_address_batch=address_batch,
+            )
+            staged = model.forward_prefetched(input_ids=input_ids, rosa_payload=payload)
+
+        stats = prefetcher.stats()
+        prefetcher.shutdown()
+
+        self.assertTrue(torch.allclose(direct["logits"], staged["logits"], atol=1e-6))
+        self.assertEqual(stats["requests"], 1)
+        self.assertEqual(stats["hits"], 1)
+        self.assertEqual(stats["misses"], 0)
+        self.assertEqual(stats["staged_payloads"], 1)
+
+    def test_prefetcher_sync_fallback_still_returns_payload(self):
+        rosa_mod.set_seed(2032)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+        )
+        model.eval()
+
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        prefetcher = model.init_prefetcher(use_async=False)
+
+        with torch.no_grad():
+            address_batch = model.schedule_rosa_prefetch(
+                prefetcher,
+                "prefill-0",
+                input_ids,
+                rosa_memory_ids=torch.empty((1, 0), dtype=torch.long),
+            )
+            payload = model.consume_rosa_prefetch(
+                prefetcher,
+                "prefill-0",
+                device=input_ids.device,
+                fallback_address_batch=address_batch,
+            )
+            staged = model.forward_prefetched(input_ids=input_ids, rosa_payload=payload)
+            direct = model(input_ids=input_ids, rosa_memory_ids=torch.empty((1, 0), dtype=torch.long))
+
+        stats = prefetcher.stats()
+        prefetcher.shutdown()
+
+        self.assertTrue(torch.allclose(direct["logits"], staged["logits"], atol=1e-6))
+        self.assertEqual(stats["sync_fallbacks"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
