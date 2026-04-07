@@ -44,6 +44,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_scale", type=float, default=0.15)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_context_gate", action="store_true")
+    parser.add_argument("--rosa_hot_cache_size", type=int, default=0)
     parser.add_argument("--rosa_prefetch", action="store_true")
     parser.add_argument("--rosa_prefetch_pinned", action="store_true")
     parser.add_argument("--rosa_backend", type=str, default="sam", choices=["sam", "naive"])
@@ -204,6 +205,7 @@ def build_models(args, tokenizer, device: torch.device):
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         use_context_gate=args.rosa_context_gate,
+        rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -576,6 +578,7 @@ def build_report(args) -> Dict[str, Any]:
     batches = iter_batches(samples, max(1, args.batch_size))
     baseline, rosa_model = build_models(args, tokenizer, device)
 
+    rosa_model.reset_hot_cache(clear_cache=True)
     prefill_report = run_prefill_profile(
         baseline,
         rosa_model,
@@ -585,6 +588,8 @@ def build_report(args) -> Dict[str, Any]:
         warmup_iters=args.warmup_iters,
         measure_iters=args.measure_iters,
     )
+    prefill_hot_cache_report = rosa_model.get_hot_cache_stats(top_k=5)
+    rosa_model.reset_hot_cache(clear_cache=True)
     decode_report = run_decode_micro_profile(
         baseline,
         rosa_model,
@@ -596,6 +601,7 @@ def build_report(args) -> Dict[str, Any]:
         use_prefetch=args.rosa_prefetch,
         use_pinned_prefetch=args.rosa_prefetch_pinned,
     )
+    decode_hot_cache_report = rosa_model.get_hot_cache_stats(top_k=5)
 
     report = {
         "meta": {
@@ -619,11 +625,17 @@ def build_report(args) -> Dict[str, Any]:
             "rosa_scale": args.rosa_scale,
             "rosa_value_mode": args.rosa_value_mode,
             "rosa_context_gate": args.rosa_context_gate,
+            "rosa_hot_cache_size": args.rosa_hot_cache_size,
             "rosa_prefetch": args.rosa_prefetch,
             "rosa_prefetch_pinned": args.rosa_prefetch_pinned,
         },
         "prefill": prefill_report,
         "decode_micro": decode_report,
+        "hot_cache": {
+            "enabled": bool(prefill_hot_cache_report.get("enabled") or decode_hot_cache_report.get("enabled")),
+            "prefill": prefill_hot_cache_report,
+            "decode_micro": decode_hot_cache_report,
+        },
     }
 
     ref_prefill = prefill_report["timings"]["rosa_reference"]["avg_ms"]
@@ -635,6 +647,10 @@ def build_report(args) -> Dict[str, Any]:
         "decode_online_vs_reference_speedup": ref_decode / online_decode if online_decode > 0 else 0.0,
         "prefill_online_logit_max_abs_diff": prefill_report["correctness"]["logit_max_abs_diff"],
         "decode_online_logit_max_abs_diff": decode_report["correctness"]["logit_max_abs_diff"],
+        "prefill_hot_cache_token_hit_rate": float(prefill_hot_cache_report.get("token_hit_rate", 0.0)),
+        "prefill_hot_cache_unique_hit_rate": float(prefill_hot_cache_report.get("unique_hit_rate", 0.0)),
+        "decode_hot_cache_token_hit_rate": float(decode_hot_cache_report.get("token_hit_rate", 0.0)),
+        "decode_hot_cache_unique_hit_rate": float(decode_hot_cache_report.get("unique_hit_rate", 0.0)),
     }
 
     save_json(report, out_dir / "profile_report.json")
@@ -671,6 +687,13 @@ def print_summary(report: Dict[str, Any]) -> None:
             report["summary"]["decode_online_logit_max_abs_diff"],
         )
     )
+    if report.get("hot_cache", {}).get("enabled"):
+        print(
+            "hot cache | prefill token_hit {0:.4f} | decode token_hit {1:.4f}".format(
+                report["hot_cache"]["prefill"].get("token_hit_rate", 0.0),
+                report["hot_cache"]["decode_micro"].get("token_hit_rate", 0.0),
+            )
+        )
     print(f"report: {Path(report['meta'].get('out_dir', 'outputs')).resolve()}")
 
 

@@ -1,8 +1,9 @@
 import threading
 import time
+from collections import Counter, OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
@@ -32,12 +33,14 @@ class RosaInjectionPayload:
     address: RosaAddressBatch
     layer_values: Tuple[torch.Tensor, ...]
     source: str = "unknown"
+    stats: Optional[Dict[str, float]] = None
 
     def to(self, device: torch.device) -> "RosaInjectionPayload":
         return RosaInjectionPayload(
             address=self.address.to(device),
             layer_values=tuple(value.to(device) for value in self.layer_values),
             source=self.source,
+            stats=dict(self.stats or {}),
         )
 
 
@@ -63,6 +66,7 @@ def stage_rosa_payload(payload: RosaInjectionPayload, *, use_pinned_memory: bool
             _stage_tensor(value, use_pinned_memory=use_pinned_memory) for value in payload.layer_values
         ),
         source=payload.source,
+        stats=dict(payload.stats or {}),
     )
 
 
@@ -79,6 +83,234 @@ def rosa_payload_nbytes(payload: RosaInjectionPayload) -> int:
     for tensor in tensors:
         total += tensor.element_size() * tensor.numel()
     return total
+
+
+class RosaHotAddressCache:
+    def __init__(self, *, num_layers: int, max_entries_per_layer: int):
+        self.num_layers = max(0, num_layers)
+        self.max_entries_per_layer = max(0, max_entries_per_layer)
+        self.enabled = self.num_layers > 0 and self.max_entries_per_layer > 0
+        self._layer_caches: List[OrderedDict[int, torch.Tensor]] = [
+            OrderedDict() for _ in range(self.num_layers)
+        ]
+        self._layer_freqs: List[Counter[int]] = [Counter() for _ in range(self.num_layers)]
+        self._layer_stats: List[Dict[str, float]] = [self._empty_stats() for _ in range(self.num_layers)]
+        self._stats: Dict[str, float] = self._empty_stats()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _empty_stats() -> Dict[str, float]:
+        return {
+            "token_requests": 0.0,
+            "token_hits": 0.0,
+            "unique_requests": 0.0,
+            "unique_hits": 0.0,
+            "fills": 0.0,
+            "evictions": 0.0,
+        }
+
+    def reset(self) -> None:
+        with self._lock:
+            for cache in self._layer_caches:
+                cache.clear()
+            for freq in self._layer_freqs:
+                freq.clear()
+            self._stats = self._empty_stats()
+            self._layer_stats = [self._empty_stats() for _ in range(self.num_layers)]
+
+    def reset_stats(self, *, clear_cache: bool = False) -> None:
+        with self._lock:
+            self._stats = self._empty_stats()
+            self._layer_stats = [self._empty_stats() for _ in range(self.num_layers)]
+            for freq in self._layer_freqs:
+                freq.clear()
+            if clear_cache:
+                for cache in self._layer_caches:
+                    cache.clear()
+
+    def _update_running_stats(self, layer_idx: int, stats: Dict[str, float]) -> None:
+        with self._lock:
+            for key, value in stats.items():
+                if key not in self._stats:
+                    continue
+                self._stats[key] += float(value)
+                self._layer_stats[layer_idx][key] += float(value)
+
+    def lookup(
+        self,
+        layer_idx: int,
+        addr_ids: torch.Tensor,
+        *,
+        valid_mask: Optional[torch.Tensor],
+        value_dim: int,
+        fetch_fn: Callable[[torch.Tensor], torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        if layer_idx < 0 or layer_idx >= self.num_layers:
+            raise IndexError(f"layer_idx={layer_idx} 超出 RosaHotAddressCache 范围。")
+        if not self.enabled:
+            return fetch_fn(addr_ids), {}
+
+        valid = valid_mask
+        if valid is None:
+            valid = torch.ones_like(addr_ids, dtype=torch.bool)
+        else:
+            valid = valid_mask.bool()
+
+        flat_ids = addr_ids.reshape(-1)
+        flat_valid = valid.reshape(-1)
+        valid_positions = flat_valid.nonzero(as_tuple=False).flatten()
+        if valid_positions.numel() == 0:
+            dummy = fetch_fn(addr_ids.reshape(-1)[:1] if addr_ids.numel() > 0 else torch.zeros(1, dtype=addr_ids.dtype, device=addr_ids.device))
+            zeros = torch.zeros(
+                (*addr_ids.shape, value_dim),
+                device=dummy.device,
+                dtype=dummy.dtype,
+            )
+            return zeros, {
+                "token_requests": 0.0,
+                "token_hits": 0.0,
+                "unique_requests": 0.0,
+                "unique_hits": 0.0,
+                "fills": 0.0,
+                "evictions": 0.0,
+                "active_entries": float(len(self._layer_caches[layer_idx])),
+                "token_hit_rate": 0.0,
+                "unique_hit_rate": 0.0,
+            }
+
+        valid_ids = flat_ids.index_select(0, valid_positions)
+        unique_ids, inverse, counts = torch.unique(
+            valid_ids,
+            sorted=False,
+            return_inverse=True,
+            return_counts=True,
+        )
+        unique_id_list = [int(x) for x in unique_ids.detach().cpu().tolist()]
+        count_list = [int(x) for x in counts.detach().cpu().tolist()]
+
+        hit_rows: Dict[int, torch.Tensor] = {}
+        miss_ids: List[int] = []
+        miss_rows: List[int] = []
+        token_hits = 0
+        unique_hits = 0
+
+        with self._lock:
+            cache = self._layer_caches[layer_idx]
+            freqs = self._layer_freqs[layer_idx]
+            for row_idx, (addr_id, token_count) in enumerate(zip(unique_id_list, count_list)):
+                freqs[addr_id] += token_count
+                cached = cache.pop(addr_id, None)
+                if cached is not None and cached.device == addr_ids.device:
+                    cache[addr_id] = cached
+                    hit_rows[row_idx] = cached
+                    unique_hits += 1
+                    token_hits += token_count
+                else:
+                    miss_ids.append(addr_id)
+                    miss_rows.append(row_idx)
+
+        miss_value_rows: Dict[int, torch.Tensor] = {}
+        fills = 0
+        evictions = 0
+        if miss_ids:
+            miss_tensor = torch.tensor(miss_ids, dtype=addr_ids.dtype, device=addr_ids.device)
+            miss_values = fetch_fn(miss_tensor)
+            for offset, row_idx in enumerate(miss_rows):
+                miss_value_rows[row_idx] = miss_values[offset]
+            staged_rows = [value.detach().clone() for value in miss_values]
+            with self._lock:
+                cache = self._layer_caches[layer_idx]
+                for addr_id, staged in zip(miss_ids, staged_rows):
+                    if addr_id not in cache:
+                        fills += 1
+                    cache[addr_id] = staged
+                    cache.move_to_end(addr_id)
+                    while len(cache) > self.max_entries_per_layer:
+                        cache.popitem(last=False)
+                        evictions += 1
+
+        sample_value = None
+        if hit_rows:
+            sample_value = next(iter(hit_rows.values()))
+        elif miss_value_rows:
+            sample_value = next(iter(miss_value_rows.values()))
+        else:
+            sample_value = fetch_fn(valid_ids[:1])
+
+        ordered_values = []
+        for row_idx in range(len(unique_id_list)):
+            value = hit_rows.get(row_idx)
+            if value is None:
+                value = miss_value_rows[row_idx]
+            ordered_values.append(value.to(sample_value.device))
+        unique_values = torch.stack(ordered_values, dim=0)
+        valid_values = unique_values.index_select(0, inverse)
+
+        out_flat = torch.zeros(
+            (flat_ids.shape[0], value_dim),
+            device=sample_value.device,
+            dtype=sample_value.dtype,
+        )
+        out_flat.index_copy_(0, valid_positions, valid_values)
+
+        local_stats = {
+            "token_requests": float(valid_ids.numel()),
+            "token_hits": float(token_hits),
+            "unique_requests": float(len(unique_id_list)),
+            "unique_hits": float(unique_hits),
+            "fills": float(fills),
+            "evictions": float(evictions),
+        }
+        self._update_running_stats(layer_idx, local_stats)
+        with self._lock:
+            active_entries = float(len(self._layer_caches[layer_idx]))
+        local_stats.update(
+            {
+                "active_entries": active_entries,
+                "token_hit_rate": local_stats["token_hits"] / local_stats["token_requests"]
+                if local_stats["token_requests"] > 0
+                else 0.0,
+                "unique_hit_rate": local_stats["unique_hits"] / local_stats["unique_requests"]
+                if local_stats["unique_requests"] > 0
+                else 0.0,
+            }
+        )
+        return out_flat.view(*addr_ids.shape, value_dim), local_stats
+
+    def stats(self, *, top_k: int = 5) -> Dict[str, Any]:
+        with self._lock:
+            total = dict(self._stats)
+            layer_stats = [dict(row) for row in self._layer_stats]
+            cache_sizes = [len(cache) for cache in self._layer_caches]
+            top_addrs = [freq.most_common(top_k) for freq in self._layer_freqs]
+
+        token_requests = total["token_requests"]
+        unique_requests = total["unique_requests"]
+        summary: Dict[str, Any] = {
+            "enabled": self.enabled,
+            "max_entries_per_layer": self.max_entries_per_layer,
+            **total,
+            "token_hit_rate": total["token_hits"] / token_requests if token_requests > 0 else 0.0,
+            "unique_hit_rate": total["unique_hits"] / unique_requests if unique_requests > 0 else 0.0,
+            "active_entries": sum(cache_sizes),
+            "layer_stats": [],
+        }
+        for layer_idx, row in enumerate(layer_stats):
+            layer_token_requests = row["token_requests"]
+            layer_unique_requests = row["unique_requests"]
+            summary["layer_stats"].append(
+                {
+                    "layer_idx": layer_idx,
+                    **row,
+                    "token_hit_rate": row["token_hits"] / layer_token_requests if layer_token_requests > 0 else 0.0,
+                    "unique_hit_rate": row["unique_hits"] / layer_unique_requests if layer_unique_requests > 0 else 0.0,
+                    "active_entries": cache_sizes[layer_idx],
+                    "top_addresses": [
+                        {"addr_id": addr_id, "count": count} for addr_id, count in top_addrs[layer_idx]
+                    ],
+                }
+            )
+        return summary
 
 
 class RosaStagingBuffer:

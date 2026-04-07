@@ -406,6 +406,69 @@ class RosaInjectionLayerSelectionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(front_out["logits"], explicit_out["logits"], atol=1e-6))
 
 
+class RosaHotCacheIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_hot_cache_stats_appear_after_repeated_eval_lookup(self):
+        rosa_mod.set_seed(7070)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_value_mode="per_layer",
+            rosa_hot_cache_size=8,
+        )
+        model.eval()
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        with torch.no_grad():
+            first = model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+            second = model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+
+        self.assertIn("rosa_hot_cache_token_hit_rate", second)
+        self.assertEqual(first["rosa_hot_cache_token_hit_rate"], 0.0)
+        self.assertGreater(second["rosa_hot_cache_token_hit_rate"], 0.0)
+        self.assertGreater(second["rosa_hot_cache_active_entries"], 0.0)
+
+        report = model.get_hot_cache_stats(top_k=2)
+        self.assertTrue(report["enabled"])
+        self.assertGreater(report["token_requests"], 0.0)
+        self.assertGreater(report["token_hit_rate"], 0.0)
+        self.assertLessEqual(report["token_hit_rate"], second["rosa_hot_cache_token_hit_rate"])
+
+    def test_hot_cache_is_ignored_in_train_mode(self):
+        rosa_mod.set_seed(8080)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_value_mode="per_layer",
+            rosa_hot_cache_size=4,
+        )
+        model.train()
+
+        with torch.no_grad():
+            out = model(
+                input_ids=torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long),
+                rosa_memory_ids=torch.empty((1, 0), dtype=torch.long),
+            )
+
+        self.assertNotIn("rosa_hot_cache_token_hit_rate", out)
+        self.assertEqual(model.get_hot_cache_stats()["token_requests"], 0.0)
+
+
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
         docs = [[1, 2, 1, 2, 3]]

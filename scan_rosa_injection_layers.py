@@ -67,6 +67,8 @@ def summarize_entry(report: dict, layer_ids: Sequence[int]) -> dict:
         "fired_avg_match_len": decode["coverage"].get("avg_fired_match_len", 0.0),
         "avg_gate": decode.get("model_stats", {}).get("rosa_avg_gate", 0.0),
         "gate_hit": decode.get("model_stats", {}).get("rosa_gate_hit", 0.0),
+        "hot_cache_token_hit_rate": decode.get("model_stats", {}).get("rosa_hot_cache_token_hit_rate", 0.0),
+        "hot_cache_unique_hit_rate": decode.get("model_stats", {}).get("rosa_hot_cache_unique_hit_rate", 0.0),
         "address_agreement": decode["correctness"]["address_agreement"].get("all_equal", 0.0),
         "logit_max_abs_diff": decode["correctness"]["logit_max_abs_diff"],
     }

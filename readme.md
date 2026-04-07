@@ -65,6 +65,21 @@ git log --oneline -5
   - CPU 路径支持异步预取
   - GPU 路径先走安全同步回退，但统计接口一致
 
+## Hot Address Cache
+
+- 开关：`--rosa_hot_cache_size`
+- 运行时实现：`rosa_runtime.py` 中的 `RosaHotAddressCache`
+- 当前策略：
+  - 按注入层独立 LRU
+  - 仅在 `eval/profile` 路径启用，训练路径默认绕过，避免干扰梯度
+  - profiling 报告会分别输出 `prefill` / `decode_micro` 两段 cache 命中率
+  - 当前 toy smoke 上能稳定看到高 hit rate；但由于 value backend 仍是本地 embedding，端到端平均时延可能只小幅变化或基本持平
+- 重点指标：
+  - `prefill_hot_cache_token_hit_rate`
+  - `decode_hot_cache_token_hit_rate`
+  - `rosa_hot_cache_active_entries`
+  - `hot_cache.layer_stats[].top_addresses`
+
 ## Injection Layer Scan
 
 - 显式层位：`--rosa_inject_layer_ids`
@@ -82,6 +97,9 @@ git log --oneline -5
   - `baseline`
   - `rosa_reference`
   - `rosa_online`
+- 当启用热点缓存时，报告还会包含：
+  - `hot_cache.prefill`
+  - `hot_cache.decode_micro`
 - 当前 decode 指标是无 KV cache 的单步 microbenchmark，适合比较 ROSA 分支路径开销与一致性，不等同于最终 serving 吞吐。
 
 ## VS Code Launch
@@ -91,6 +109,7 @@ git log --oneline -5
 - `ROSA v2 - P1 Value+Gate Smoke (Qwen)`：直接训练一版 `per_layer + context_gate` 小实验。
 - `ROSA v2 - Online Baseline Profile (P1 Value+Gate Smoke)`：快速看 P1 组合路径是否跑通。
 - `ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)`：快速看 prefetch/staging 统计是否正常。
+- `ROSA v2 - Online Baseline Profile (P1 Hot Cache Smoke)`：快速看热点缓存的命中率与 tail latency。
 - `ROSA v2 - Injection Layer Scan (Smoke)`：快速扫描不同注入层位。
 
 ## 当前开发约定

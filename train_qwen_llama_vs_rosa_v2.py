@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from rosa_runtime import RosaAddressBatch, RosaInjectionPayload, RosaPrefetcher
+from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 
 try:
     from transformers import AutoTokenizer
@@ -836,6 +836,34 @@ class RosaValueStore(nn.Module):
             raise IndexError(f"layer_idx={layer_idx} 超出 RosaValueStore 可用层数。")
         return self.per_layer_tables[layer_idx](addr_ids_safe)
 
+    def lookup_with_hot_cache(
+        self,
+        layer_idx: int,
+        addr_ids: torch.Tensor,
+        *,
+        valid_mask: Optional[torch.Tensor],
+        shared_embedding: nn.Embedding,
+        hot_cache: Optional[RosaHotAddressCache],
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        addr_ids_safe = addr_ids.clamp_min(0)
+
+        def fetch_fn(ids: torch.Tensor) -> torch.Tensor:
+            if not self.is_per_layer:
+                return shared_embedding(ids)
+            if self.per_layer_tables is None or layer_idx >= len(self.per_layer_tables):
+                raise IndexError(f"layer_idx={layer_idx} 超出 RosaValueStore 可用层数。")
+            return self.per_layer_tables[layer_idx](ids)
+
+        if hot_cache is None:
+            return fetch_fn(addr_ids_safe), {}
+        return hot_cache.lookup(
+            layer_idx,
+            addr_ids_safe,
+            valid_mask=valid_mask,
+            value_dim=self.dim,
+            fetch_fn=fetch_fn,
+        )
+
 
 def init_identity_linear_(proj: nn.Linear) -> None:
     if proj.weight.shape[0] != proj.weight.shape[1]:
@@ -1500,6 +1528,7 @@ class RosaFusedLM(BaseLM):
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
         use_context_gate: bool = False,
+        rosa_hot_cache_size: int = 0,
         special_ids: Optional[set] = None,
         forbid_special_target: bool = True,
         use_match_len_gate: bool = True,
@@ -1521,6 +1550,7 @@ class RosaFusedLM(BaseLM):
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
         self.use_context_gate = use_context_gate
+        self.rosa_hot_cache_size = max(0, int(rosa_hot_cache_size))
         self.special_ids = special_ids or set()
         self.forbid_special_target = forbid_special_target
         self.use_match_len_gate = use_match_len_gate
@@ -1531,6 +1561,14 @@ class RosaFusedLM(BaseLM):
             mode=rosa_value_mode,
         )
         self.rosa_value_store.copy_shared_weights_(self.embed_tokens)
+        self.rosa_hot_cache = (
+            RosaHotAddressCache(
+                num_layers=self.inject_layers,
+                max_entries_per_layer=self.rosa_hot_cache_size,
+            )
+            if self.rosa_hot_cache_size > 0
+            else None
+        )
         if use_context_gate:
             self.rosa_gate_hidden_norms = nn.ModuleList(
                 [RMSNorm(cfg.dim, cfg.rms_norm_eps) for _ in range(self.inject_layers)]
@@ -1557,6 +1595,32 @@ class RosaFusedLM(BaseLM):
             self.rosa_gate_value_projs = None
             self.rosa_gate_match_len_scale = None
             self.rosa_gate_bias = None
+
+    def reset_hot_cache(self, *, clear_cache: bool = True) -> None:
+        if self.rosa_hot_cache is None:
+            return
+        if clear_cache:
+            self.rosa_hot_cache.reset()
+        else:
+            self.rosa_hot_cache.reset_stats(clear_cache=False)
+
+    def get_hot_cache_stats(self, *, top_k: int = 5) -> Dict[str, Any]:
+        if self.rosa_hot_cache is None:
+            return {
+                "enabled": False,
+                "max_entries_per_layer": 0,
+                "token_requests": 0.0,
+                "token_hits": 0.0,
+                "unique_requests": 0.0,
+                "unique_hits": 0.0,
+                "fills": 0.0,
+                "evictions": 0.0,
+                "token_hit_rate": 0.0,
+                "unique_hit_rate": 0.0,
+                "active_entries": 0,
+                "layer_stats": [],
+            }
+        return self.rosa_hot_cache.stats(top_k=top_k)
 
     def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
         return build_online_rosa_batch_state(
@@ -1639,18 +1703,47 @@ class RosaFusedLM(BaseLM):
         source: Optional[str] = None,
     ) -> RosaInjectionPayload:
         batch = address_batch.to(device) if device is not None else address_batch
-        layer_values = tuple(
-            self.rosa_value_store.lookup(
+        hot_cache = self.rosa_hot_cache if (self.rosa_hot_cache is not None and not self.training) else None
+        layer_values: List[torch.Tensor] = []
+        cache_rows: List[Dict[str, float]] = []
+        for layer_idx in range(self.inject_layers):
+            values, cache_stats = self.rosa_value_store.lookup_with_hot_cache(
                 layer_idx,
                 batch.addr_ids,
+                valid_mask=batch.valid_mask,
                 shared_embedding=self.embed_tokens,
+                hot_cache=hot_cache,
             )
-            for layer_idx in range(self.inject_layers)
-        )
+            layer_values.append(values)
+            if cache_stats:
+                cache_rows.append(cache_stats)
+        payload_stats: Dict[str, float] = {}
+        if cache_rows:
+            token_requests = sum(row.get("token_requests", 0.0) for row in cache_rows)
+            token_hits = sum(row.get("token_hits", 0.0) for row in cache_rows)
+            unique_requests = sum(row.get("unique_requests", 0.0) for row in cache_rows)
+            unique_hits = sum(row.get("unique_hits", 0.0) for row in cache_rows)
+            layers_with_requests = sum(1 for row in cache_rows if row.get("token_requests", 0.0) > 0.0)
+            payload_stats.update(
+                {
+                    "rosa_hot_cache_size": float(self.rosa_hot_cache_size),
+                    "rosa_hot_cache_active_entries": sum(row.get("active_entries", 0.0) for row in cache_rows),
+                    "rosa_hot_cache_token_hit_rate": token_hits / token_requests if token_requests > 0 else 0.0,
+                    "rosa_hot_cache_unique_hit_rate": unique_hits / unique_requests if unique_requests > 0 else 0.0,
+                    "rosa_hot_cache_fill_rate": (
+                        sum(row.get("fills", 0.0) for row in cache_rows) / unique_requests
+                        if unique_requests > 0
+                        else 0.0
+                    ),
+                    "rosa_hot_cache_evictions": sum(row.get("evictions", 0.0) for row in cache_rows),
+                    "rosa_hot_cache_layers_used": float(layers_with_requests),
+                }
+            )
         return RosaInjectionPayload(
             address=batch,
-            layer_values=layer_values,
+            layer_values=tuple(layer_values),
             source=source or batch.source,
+            stats=payload_stats or None,
         )
 
     def prepare_rosa_injection_payload(
@@ -1802,6 +1895,8 @@ class RosaFusedLM(BaseLM):
             "rosa_raw_match_coverage": raw_has_match.float().mean().item(),
             "rosa_raw_avg_best_len": raw_best_lens[raw_has_match].float().mean().item() if raw_has_match.any() else 0.0,
         }
+        if rosa_payload.stats:
+            stats.update(rosa_payload.stats)
         if self.use_context_gate:
             if gate_values:
                 gate_tensor = torch.cat([g.reshape(-1) for g in gate_values], dim=0)
@@ -2152,6 +2247,8 @@ def main():
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
     parser.add_argument("--rosa_context_gate", action="store_true",
                         help="启用 Engram 风格的 context-aware gate。")
+    parser.add_argument("--rosa_hot_cache_size", type=int, default=0,
+                        help="每个注入层的热点地址缓存条目数；0 表示关闭，仅在 eval/profile 路径启用。")
     parser.add_argument("--rosa_allow_special_target", action="store_true")
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true",
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
@@ -2226,6 +2323,7 @@ def main():
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
+    print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
@@ -2275,6 +2373,7 @@ def main():
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         use_context_gate=args.rosa_context_gate,
+        rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -2322,6 +2421,7 @@ def main():
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         use_context_gate=args.rosa_context_gate,
+        rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
@@ -2356,6 +2456,7 @@ def main():
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
             "context_gate": args.rosa_context_gate,
+            "hot_cache_size": args.rosa_hot_cache_size,
         },
         "dataset": {
             "source": dataset_source,

@@ -4,7 +4,7 @@
 
 - 已有基础：`train_qwen_llama_vs_rosa_v2.py` 中已实现 ROSA 的 `sam` 检索版本，并有基础回归测试。
 - 当前分支：`codex/online-rosa-p0-foundation`
-- 当前阶段：P0 基础设施
+- 当前阶段：P1 运行时强化已收尾
 
 ## 本轮任务
 
@@ -19,6 +19,7 @@
 - [x] P1-3: 把在线调度改成“地址先算、值后取”
 - [x] P1-4: 加入异步预取与 staging buffer
 - [x] P1-5: 层位扫描与插入策略搜索
+- [x] P1-6: 缓存与热点地址管理
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -59,14 +60,22 @@
   - `consume_rosa_prefetch()`
 - 新增 `--rosa_inject_layer_ids`
 - 新增 `scan_rosa_injection_layers.py`
+- 新增 `--rosa_hot_cache_size`
+- 新增 `RosaHotAddressCache`
 - profiling 报告输出 `profile_report.json`，包含：
   - prefill 延迟 / tok/s
   - decode microbenchmark 延迟 / tok/s
   - 地址一致性
   - match / fire coverage
   - online vs reference logit diff
+- cache 相关统计现已接入：
+  - `prefill_hot_cache_token_hit_rate`
+  - `decode_hot_cache_token_hit_rate`
+  - `rosa_hot_cache_active_entries`
+  - `layer_stats.top_addresses`
 - 新增测试文件 `tests/test_rosa_online_state.py`。
 - 新增测试文件 `tests/test_profile_rosa_online_baseline.py`。
+- 新增测试文件 `tests/test_rosa_runtime.py`。
 
 ## 自我验证记录
 
@@ -78,7 +87,10 @@
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_value_mode per_layer --rosa_context_gate`（P1 组合 smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_prefetch`（P1-4 smoke）
 - `conda run -n model python scan_rosa_injection_layers.py ... --scan_mode single --layer_candidates \"0,1\"`（P1-5 smoke）
-- 结果：共 32 个测试，全部通过；层位扫描脚本已产出 ranked report。
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_hot_cache_size 16`（P1-6 cache smoke）
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_min_match_len 1 --rosa_hot_cache_size 16`（P1-6 hit/tail smoke）
+- 结果：共 37 个测试，全部通过；P1 六项任务均已落地。
+- cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
@@ -86,12 +98,14 @@
   - `outputs/profile_smoke_p1_value_gate/profile_report.json`
   - `outputs/profile_smoke_prefetch_p1/profile_report.json`
   - `outputs/scan_p1_layers_smoke/layer_scan_report.json`
+  - `outputs/profile_p1_hot_cache_on/profile_report.json`
+  - `outputs/profile_p1_hot_cache_on_m1/profile_report.json`
 
 ## 下一步
 
-- 可以直接运行新的 launch 做 P1 特性组合实验。
-- 如果要验证训练收益，优先跑 `P1 Value+Gate Smoke (Qwen)`，再看 `comparison.json` 和 profiling 报告。
-- 下一步继续做 P1-6 热点地址缓存。
+- 可以直接运行新的 launch 做 P1 特性组合实验，或单独验证热点缓存。
+- 如果要验证 cache 行为，优先看 `prefill_hot_cache_token_hit_rate`、`decode_hot_cache_token_hit_rate` 和 p95。
+- 下一步进入 P2，优先考虑 tokenizer compression / canonicalization。
 
 ## 备注
 

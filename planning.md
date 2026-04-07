@@ -7,8 +7,8 @@
 ## 当前迭代
 
 - 分支：`codex/online-rosa-p0-foundation`
-- 迭代主题：P0 基础设施
-- 当前状态：已完成 P1-5 层位扫描基础能力，下一步进入热点缓存
+- 迭代主题：P1 运行时强化
+- 当前状态：已完成 P1-6 热点地址缓存，P1 主线任务全部完成
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -45,13 +45,16 @@
 - profiling 已支持 `--rosa_prefetch`，输出 `hit_rate` / `wait_ms` / `sync_fallbacks` 等预取指标。
 - 已支持显式层位集合 `--rosa_inject_layer_ids`，并新增 `scan_rosa_injection_layers.py` 做 single/pair 扫描。
 - 小型扫描实验已跑通，当前 toy smoke 上 `layer 0` 优于 `layer 1`。
+- 已在 `rosa_runtime.py` 中新增 `RosaHotAddressCache`，支持按层 LRU 热点缓存、频次统计与 top-hot 地址报告。
+- 已在 `RosaFusedLM` 中接入 `--rosa_hot_cache_size`，并将命中率、fill/evict、active entries 注入 profiling / eval 输出。
+- 小型 cache smoke 已补齐；当前在 `min_match_len=1` 的 toy profile 上，prefill / decode token hit rate 约为 `0.98 / 0.96`，说明热点地址读取显著减少；由于 value backend 仍是本地 embedding，端到端平均时延基本持平。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 完成 P1-6：热点地址缓存与统计。
-2. 为 cache 补 hit rate / tail latency 相关 smoke。
-3. 收尾更新剩余 P1 进度与推荐实验入口。
+1. 从 P2 开始评估 tokenizer compression / canonicalization 的切入点。
+2. 继续设计 token value -> memory value 的升级路线。
+3. 在更大样本上复查 P1 组合路径的训练收益与服务时延。
 
 ## 自我验证清单
 
