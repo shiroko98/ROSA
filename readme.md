@@ -43,6 +43,15 @@ git log --oneline -5
   - `rosa_gate_hit`
 - `match_len` 仍然作为先验项参与 gate 计算；若关闭 `--rosa_disable_match_len_gate`，则只保留上下文项
 
+## Runtime Payload
+
+- 运行时数据结构在 `rosa_runtime.py`
+- 调度拆分后的典型流程：
+  - `compute_rosa_address_batch()`
+  - `build_rosa_injection_payload()`
+  - `forward(..., rosa_payload=...)`
+- 这层接口是后续预取、缓存、层外调度的基础
+
 ## Profiling 基线
 
 - profiling 脚本：`profile_rosa_online_baseline.py`

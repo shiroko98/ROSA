@@ -211,6 +211,67 @@ class OnlineInjectionLoopTests(unittest.TestCase):
         self.assertEqual(snap.last_address.addr_id, -1)
         self.assertEqual(snap.last_address.raw_match_len, 0)
 
+    def test_prepared_payload_matches_direct_forward(self):
+        rosa_mod.set_seed(2029)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+            rosa_value_mode="per_layer",
+            use_context_gate=True,
+        )
+        model.eval()
+
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        with torch.no_grad():
+            direct = model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+            address_batch = model.compute_rosa_address_batch(
+                input_ids,
+                rosa_memory_ids=memory_ids,
+            )
+            payload = model.build_rosa_injection_payload(address_batch, device=input_ids.device)
+            staged = model(input_ids=input_ids, rosa_payload=payload)
+
+        self.assertTrue(torch.allclose(direct["logits"], staged["logits"], atol=1e-6))
+        self.assertAlmostEqual(direct["rosa_fire_coverage"], staged["rosa_fire_coverage"], places=6)
+        self.assertAlmostEqual(direct["rosa_avg_gate"], staged["rosa_avg_gate"], places=6)
+
+    def test_online_payload_path_matches_forward_online(self):
+        rosa_mod.set_seed(2030)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_scale=0.5,
+            rosa_value_mode="per_layer",
+            use_context_gate=True,
+        )
+        model.eval()
+
+        online_state_a = model.init_online_state(batch_size=1)
+        online_state_b = model.init_online_state(batch_size=1)
+        prefill = torch.tensor([[1, 2, 1]], dtype=torch.long)
+        online_state_a.prefill(prefill, pad_id=0)
+        online_state_b.prefill(prefill, pad_id=0)
+        input_ids = torch.tensor([[2]], dtype=torch.long)
+
+        with torch.no_grad():
+            direct = model.forward_online(input_ids=input_ids, rosa_online_state=online_state_a)
+            payload = model.prepare_rosa_injection_payload(
+                input_ids,
+                rosa_online_state=online_state_b,
+            )
+            staged = model(input_ids=input_ids, rosa_payload=payload)
+
+        self.assertTrue(torch.allclose(direct["logits"], staged["logits"], atol=1e-6))
+        self.assertAlmostEqual(direct["rosa_fire_coverage"], staged["rosa_fire_coverage"], places=6)
+        self.assertAlmostEqual(direct["rosa_avg_gate"], staged["rosa_avg_gate"], places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

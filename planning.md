@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：P0 基础设施
-- 当前状态：已完成 P0 主线，并完成 P1 前两个关键特性：`per-layer Value Store` 与 `context-aware gate`
+- 当前状态：已完成 P0 主线，并完成 P1-3 的调度拆分：地址先算、值后取、层内消费
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -39,13 +39,15 @@
 - `per_layer` 模式下每个注入层都有独立 value table，初始化时从共享词嵌入复制权重，便于平滑起步。
 - 已在 `RosaFusedLM` 中新增可选 `context-aware gate`，使用当前 hidden state 与 memory value 的相互作用决定注入强度。
 - gate 统计指标已接入模型输出：`rosa_avg_gate` / `rosa_gate_coverage` / `rosa_gate_hit`。
+- 已将运行时数据结构拆到 `rosa_runtime.py`，并新增 `RosaAddressBatch` / `RosaInjectionPayload`。
+- 已将 `RosaFusedLM` 拆成显式三段：`compute_rosa_address_batch()` -> `build_rosa_injection_payload()` -> `forward_hidden(..., rosa_payload=...)`。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 用新的 launch 跑一次更完整的 P1 smoke / mini 实验。
-2. 视结果决定是否继续推进 P1 后续的“地址先算、值后取”调度拆分。
-3. 如果继续增强表达能力，可开始准备 P2 的轻量后处理分支。
+1. 完成 P1-4：加入异步预取与 staging buffer。
+2. 在新的 payload 接口上挂预取统计与等待时间统计。
+3. 后续再补层位扫描与热点缓存。
 
 ## 自我验证清单
 

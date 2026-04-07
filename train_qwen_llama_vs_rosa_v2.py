@@ -15,6 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
+from rosa_runtime import RosaAddressBatch, RosaInjectionPayload
+
 try:
     from transformers import AutoTokenizer
 except Exception:
@@ -1102,6 +1104,17 @@ def pack_address_meta_batch(
     }
 
 
+def make_rosa_address_batch(addressed: Dict[str, torch.Tensor], *, source: str = "unknown") -> RosaAddressBatch:
+    return RosaAddressBatch(
+        addr_ids=addressed["addr_ids"],
+        raw_match_lens=addressed["raw_match_lens"],
+        fired_match_lens=addressed["fired_match_lens"],
+        valid_mask=addressed["valid_mask"],
+        special_mask=addressed["special_mask"],
+        source=source,
+    )
+
+
 def online_rosa_address_meta_with_memory(
     input_ids: torch.Tensor,
     memory_ids: Optional[torch.Tensor],
@@ -1537,6 +1550,97 @@ class RosaFusedLM(BaseLM):
             forbid_special_target=self.forbid_special_target,
         )
 
+    def compute_rosa_address_batch(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+    ) -> RosaAddressBatch:
+        if rosa_precomputed_ids is not None:
+            fired_match_lens = (
+                rosa_precomputed_match_lens
+                if rosa_precomputed_match_lens is not None
+                else torch.zeros_like(rosa_precomputed_ids)
+            )
+            raw_match_lens = (
+                rosa_precomputed_raw_best_lens
+                if rosa_precomputed_raw_best_lens is not None
+                else fired_match_lens
+            )
+            return RosaAddressBatch(
+                addr_ids=rosa_precomputed_ids,
+                raw_match_lens=raw_match_lens,
+                fired_match_lens=fired_match_lens,
+                valid_mask=rosa_precomputed_ids.ge(0),
+                special_mask=torch.zeros_like(rosa_precomputed_ids, dtype=torch.bool),
+                source="precomputed",
+            )
+
+        if rosa_online_state is not None:
+            addressed = rosa_online_state.address_tokens(
+                input_ids,
+                pad_id=self.pad_id,
+                device=input_ids.device,
+            )
+            return make_rosa_address_batch(addressed, source="online")
+
+        addressed = rosa_addressing_with_memory(
+            input_ids=input_ids,
+            memory_ids=rosa_memory_ids,
+            min_match_len=self.min_match_len,
+            pad_id=self.pad_id,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+            backend=self.rosa_backend,
+        )
+        return make_rosa_address_batch(addressed, source=f"memory:{self.rosa_backend}")
+
+    def build_rosa_injection_payload(
+        self,
+        address_batch: RosaAddressBatch,
+        *,
+        device: Optional[torch.device] = None,
+        source: Optional[str] = None,
+    ) -> RosaInjectionPayload:
+        batch = address_batch.to(device) if device is not None else address_batch
+        layer_values = tuple(
+            self.rosa_value_store.lookup(
+                layer_idx,
+                batch.addr_ids,
+                shared_embedding=self.embed_tokens,
+            )
+            for layer_idx in range(self.inject_layers)
+        )
+        return RosaInjectionPayload(
+            address=batch,
+            layer_values=layer_values,
+            source=source or batch.source,
+        )
+
+    def prepare_rosa_injection_payload(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+    ) -> RosaInjectionPayload:
+        address_batch = self.compute_rosa_address_batch(
+            input_ids,
+            rosa_memory_ids=rosa_memory_ids,
+            rosa_online_state=rosa_online_state,
+            rosa_precomputed_ids=rosa_precomputed_ids,
+            rosa_precomputed_match_lens=rosa_precomputed_match_lens,
+            rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+        )
+        return self.build_rosa_injection_payload(address_batch, device=input_ids.device)
+
     def compute_rosa_context_gate(
         self,
         layer_idx: int,
@@ -1561,6 +1665,7 @@ class RosaFusedLM(BaseLM):
         input_ids: torch.Tensor,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_payload: Optional[RosaInjectionPayload] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1570,38 +1675,21 @@ class RosaFusedLM(BaseLM):
         attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
         attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
 
-        if rosa_precomputed_ids is not None:
-            rosa_ids = rosa_precomputed_ids
-            fired_match_lens = (
-                rosa_precomputed_match_lens
-                if rosa_precomputed_match_lens is not None
-                else torch.zeros_like(rosa_ids)
-            )
-            raw_best_lens = (
-                rosa_precomputed_raw_best_lens
-                if rosa_precomputed_raw_best_lens is not None
-                else fired_match_lens
-            )
-        elif rosa_online_state is not None:
-            addressed = rosa_online_state.address_tokens(
+        if rosa_payload is None:
+            rosa_payload = self.prepare_rosa_injection_payload(
                 input_ids,
-                pad_id=self.pad_id,
-                device=input_ids.device,
+                rosa_memory_ids=rosa_memory_ids,
+                rosa_online_state=rosa_online_state,
+                rosa_precomputed_ids=rosa_precomputed_ids,
+                rosa_precomputed_match_lens=rosa_precomputed_match_lens,
+                rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
             )
-            rosa_ids = addressed["addr_ids"]
-            fired_match_lens = addressed["fired_match_lens"]
-            raw_best_lens = addressed["raw_match_lens"]
         else:
-            rosa_ids, fired_match_lens, raw_best_lens = rosa_retrieval_with_memory(
-                input_ids=input_ids,
-                memory_ids=rosa_memory_ids,
-                min_match_len=self.min_match_len,
-                pad_id=self.pad_id,
-                special_ids=self.special_ids,
-                forbid_special_target=self.forbid_special_target,
-                backend=self.rosa_backend,
-            )
+            rosa_payload = rosa_payload.to(input_ids.device)
 
+        rosa_ids = rosa_payload.address.addr_ids
+        fired_match_lens = rosa_payload.address.fired_match_lens
+        raw_best_lens = rosa_payload.address.raw_match_lens
         active = (rosa_ids >= 0)
 
         if self.use_match_len_gate:
@@ -1615,11 +1703,7 @@ class RosaFusedLM(BaseLM):
 
         for layer_idx, blk in enumerate(self.layers):
             if layer_idx < self.inject_layers:
-                rosa_value = self.rosa_value_store.lookup(
-                    layer_idx,
-                    rosa_ids,
-                    shared_embedding=self.embed_tokens,
-                )
+                rosa_value = rosa_payload.layer_values[layer_idx]
                 if self.use_context_gate:
                     gate = self.compute_rosa_context_gate(
                         layer_idx,
@@ -1676,6 +1760,7 @@ class RosaFusedLM(BaseLM):
         labels: Optional[torch.Tensor] = None,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_payload: Optional[RosaInjectionPayload] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1684,6 +1769,7 @@ class RosaFusedLM(BaseLM):
             input_ids,
             rosa_memory_ids=rosa_memory_ids,
             rosa_online_state=rosa_online_state,
+            rosa_payload=rosa_payload,
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
@@ -1706,10 +1792,14 @@ class RosaFusedLM(BaseLM):
         rosa_online_state: OnlineRosaBatchState,
         labels: Optional[torch.Tensor] = None,
     ):
+        rosa_payload = self.prepare_rosa_injection_payload(
+            input_ids,
+            rosa_online_state=rosa_online_state,
+        )
         return self.forward(
             input_ids=input_ids,
             labels=labels,
-            rosa_online_state=rosa_online_state,
+            rosa_payload=rosa_payload,
         )
 
 
