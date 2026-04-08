@@ -80,6 +80,8 @@ git log --oneline -5
   - 作为在线训练主线的第一版统一入口
   - 当前训练默认已切到 `online_seq + online_exact`
   - `doc_local` / `global_train` 在线模式默认提供 `full doc prefix` 左侧 memory，用于和旧 reference 路径对齐
+  - 对 `online_exact` / `online_sam`，训练阶段现默认启用“训练地址缓存”，会在数据集构建时预先缓存整文档 sequence 地址，避免每个 chunk 在前向里重放整段前缀
+  - 如需回到逐 batch 现场构建，可加：`--disable_rosa_train_address_cache`
   - 训练 / 评测输出里可直接看地址来源统计：
     - `rosa_address_source_precomputed`
     - `rosa_address_source_online_seq`
@@ -103,6 +105,7 @@ git log --oneline -5
   - `--rosa_inject_layer_ids 0`
   - `--rosa_min_match_len 1`
   - `--rosa_scale 0.15`
+- `online_v1` 当前会默认吃到训练地址缓存，因此训练仍属于在线主线语义，但不会为每个 chunk 重复重放整段 `full doc prefix`
 - 典型 smoke：
 
 ```powershell
@@ -216,6 +219,10 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - rosa_fused `step ~124.1ms`
   - 其中 `rosa_addr ~85.7ms`
   - 说明当前体感变慢主要来自在线地址生成，而不是主干 Transformer 或 value payload
+- 当前一次 `8/4/4` 小实验对比（`online_seq + online_sam`）：
+  - 关闭训练地址缓存：`rosa_addr ~85.1ms`，`step ~133.5ms`
+  - 开启训练地址缓存：`rosa_addr ~0.2ms`，`step ~56.9ms`
+  - 说明当前最有效的训练加速手段，是把在线 sequence 地址从“每个 chunk 前向重放”改成“数据集构建期缓存”
 
 ## VS Code Launch
 

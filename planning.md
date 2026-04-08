@@ -9,6 +9,7 @@
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
 - 当前状态：已完成在线主线 `P1-3`、`P1-2`、`P1-4`、`P1-1` 与 `P1-5`；suffix automaton state、统一 session 生命周期、prefetch/cache 主线、在线训练 V1 配方和统一层位 sweep 协议都已接入
+- 当前补充优化：已完成在线训练地址缓存，将 `online_seq + online_exact/online_sam` 的训练期地址构建前移到数据集阶段，优先缓解 `model_rosa_address` 瓶颈
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -54,6 +55,9 @@
 - 已新增 `--rosa_train_mode online_seq|reference_precompute`，默认训练主入口切到 `online_seq`。
 - `doc_local` / `global_train` 在线训练路径现在默认提供 `full doc prefix` 左侧 memory，不再默认依赖 `rosa_precomputed_ids`。
 - 旧 `doc_local + sam precompute` 已退为显式 `reference_precompute` 回归路径。
+- 已新增 `rosa_training_cache.py`，并让 `online_seq + online_exact/online_sam` 默认在训练期缓存整文档 sequence 地址。
+- 已新增 `--disable_rosa_train_address_cache`，用于保留“逐 batch 现场构建地址”的对照路径。
+- `profile_rosa_online_baseline.py` / `rosa_layer_sweep.py` 已同步兼容训练地址缓存数据集。
 - 已在模型输出统计中加入地址来源标记：
   - `rosa_address_source_precomputed`
   - `rosa_address_source_online_seq`
@@ -121,7 +125,7 @@
 1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
 2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
 3. 训练性能优化先记为后续项：在保持 `online_seq` 定义不变的前提下，尝试地址支路 CPU worker 前移 / next-batch overlap，而不是退回旧离线持久 precompute。
-4. 当前已用 `--train_timing` 验证：小实验里主要瓶颈在 `model_rosa_address`，后续训练加速应优先针对地址支路，而不是优先改主干或 payload。
+4. 当前已用 `--train_timing` 验证并完成第一轮修复：小实验里 `model_rosa_address` 已从 `~85ms` 降到 `~0.2ms`；后续若继续优化，应继续针对地址支路，而不是优先改主干或 payload。
 
 ## 自我验证清单
 

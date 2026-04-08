@@ -47,6 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
                         choices=["reference_backend", "online_exact", "online_sam"])
+    parser.add_argument("--disable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--rosa_context_gate", action="store_true")
     parser.add_argument("--rosa_hot_cache_size", type=int, default=0)
     parser.add_argument("--rosa_prefetch", action="store_true")
@@ -274,9 +275,11 @@ def run_train_path_consistency_profile(
         rosa_global_memory_tokens=0,
         rosa_backend=args.rosa_backend,
         rosa_train_mode="online_seq",
+        rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
+        enable_train_address_cache=not getattr(args, "disable_rosa_train_address_cache", False),
     )
     reference_ds, _, _, reference_meta = rosa_mod.build_chunk_datasets(
         docs_tokens,
@@ -290,9 +293,11 @@ def run_train_path_consistency_profile(
         rosa_global_memory_tokens=0,
         rosa_backend=args.rosa_backend,
         rosa_train_mode="reference_precompute",
+        rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
+        enable_train_address_cache=not getattr(args, "disable_rosa_train_address_cache", False),
     )
     if len(online_ds) != len(reference_ds):
         raise ValueError(
@@ -324,6 +329,10 @@ def run_train_path_consistency_profile(
         labels = online_batch_cpu["labels"].to(device)
         online_mem = online_batch_cpu["rosa_memory_ids"].to(device)
         reference_mem = reference_batch_cpu["rosa_memory_ids"].to(device)
+        online_pre_ids = online_batch_cpu.get("rosa_precomputed_ids")
+        online_pre_match = online_batch_cpu.get("rosa_precomputed_match_lens")
+        online_pre_raw = online_batch_cpu.get("rosa_precomputed_raw_best_lens")
+        online_pre_source = online_batch_cpu.get("rosa_precomputed_source")
         reference_pre_ids = reference_batch_cpu["rosa_precomputed_ids"].to(device)
         reference_pre_match = reference_batch_cpu["rosa_precomputed_match_lens"].to(device)
         reference_pre_raw = reference_batch_cpu["rosa_precomputed_raw_best_lens"].to(device)
@@ -332,6 +341,10 @@ def run_train_path_consistency_profile(
             online_address = online_model.compute_rosa_address_batch(
                 input_ids,
                 rosa_memory_ids=online_mem,
+                rosa_precomputed_ids=online_pre_ids.to(device) if online_pre_ids is not None else None,
+                rosa_precomputed_match_lens=online_pre_match.to(device) if online_pre_match is not None else None,
+                rosa_precomputed_raw_best_lens=online_pre_raw.to(device) if online_pre_raw is not None else None,
+                rosa_precomputed_source=online_pre_source,
             )
             reference_address = reference_model.compute_rosa_address_batch(
                 input_ids,
@@ -344,6 +357,10 @@ def run_train_path_consistency_profile(
                 input_ids=input_ids,
                 labels=labels,
                 rosa_memory_ids=online_mem,
+                rosa_precomputed_ids=online_pre_ids.to(device) if online_pre_ids is not None else None,
+                rosa_precomputed_match_lens=online_pre_match.to(device) if online_pre_match is not None else None,
+                rosa_precomputed_raw_best_lens=online_pre_raw.to(device) if online_pre_raw is not None else None,
+                rosa_precomputed_source=online_pre_source,
             )
             reference_out = reference_model(
                 input_ids=input_ids,
