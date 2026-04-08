@@ -20,6 +20,7 @@
 - [x] P1-4: 加入异步预取与 staging buffer
 - [x] P1-5: 层位扫描与插入策略搜索
 - [x] P1-6: 缓存与热点地址管理
+- [x] 在线主线 Task-1: `AddressEngine.forward_seq()`
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -62,6 +63,8 @@
 - 新增 `scan_rosa_injection_layers.py`
 - 新增 `--rosa_hot_cache_size`
 - 新增 `RosaHotAddressCache`
+- 新增 `RosaAddressEngine`
+- 新增 `--rosa_seq_address_mode reference_backend|online_exact`
 - profiling 报告输出 `profile_report.json`，包含：
   - prefill 延迟 / tok/s
   - decode microbenchmark 延迟 / tok/s
@@ -89,8 +92,10 @@
 - `conda run -n model python scan_rosa_injection_layers.py ... --scan_mode single --layer_candidates \"0,1\"`（P1-5 smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_hot_cache_size 16`（P1-6 cache smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_min_match_len 1 --rosa_hot_cache_size 16`（P1-6 hit/tail smoke）
-- 结果：共 37 个测试，全部通过；P1 六项任务均已落地。
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_exact`（在线主线 Task-1 smoke）
+- 结果：共 40 个测试，全部通过；P1 六项任务均已落地，在线主线 Task-1 也已完成。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
+- AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
@@ -110,6 +115,7 @@
   - `ROSA-DocMemory`：外部检索文档作为 side memory
   - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
 - 下一步优先实现新的在线训练主线：`teacher forcing 并行主干 + AddressEngine.forward_seq() + 在线 side-branch 注入`。
+- 下一步优先把训练数据默认输入从 `rosa_precomputed_ids` 切到 token / memory，再让训练前向真正使用 `AddressEngine.forward_seq()`。
 
 ## 备注
 

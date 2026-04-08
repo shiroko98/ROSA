@@ -52,6 +52,19 @@ git log --oneline -5
   - `forward(..., rosa_payload=...)`
 - 这层接口是后续预取、缓存、层外调度的基础
 
+## Address Engine
+
+- 统一入口：`RosaAddressEngine`
+- 当前支持两种 sequence 模式：
+  - `--rosa_seq_address_mode reference_backend`
+  - `--rosa_seq_address_mode online_exact`
+- 含义：
+  - `reference_backend`：继续走现有整段 reference 地址逻辑
+  - `online_exact`：按左上下文顺序扫描整段，生成 `[B, T]` 地址结果
+- 当前用途：
+  - 作为在线训练主线的第一版统一入口
+  - 暂时不改变 `doc_local + sam precompute` 的默认训练路径
+
 ## Prefetch / Staging
 
 - 入口能力：

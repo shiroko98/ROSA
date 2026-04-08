@@ -46,6 +46,73 @@ class AddressInterfaceTests(unittest.TestCase):
             self.assertTrue(torch.equal(naive[key], sam[key]), msg=f"mismatch at {key}")
 
 
+class RosaAddressEngineTests(unittest.TestCase):
+    def test_forward_seq_online_exact_matches_reference_sam(self):
+        input_ids = torch.tensor(
+            [
+                [1, 2, 1, 2, 3],
+                [7, 8, 7, 8, 9],
+            ],
+            dtype=torch.long,
+        )
+        memory_ids = torch.tensor(
+            [
+                [4, 5, 1, 2, 0, 0],
+                [6, 7, 8, 0, 0, 0],
+            ],
+            dtype=torch.long,
+        )
+        engine = rosa_mod.RosaAddressEngine(
+            min_match_len=2,
+            pad_id=0,
+            backend="sam",
+            sequence_mode="online_exact",
+            special_ids={9},
+            forbid_special_target=True,
+        )
+
+        out = engine.forward_seq(input_ids, memory_ids)
+        ref = rosa_mod.rosa_addressing_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=2,
+            pad_id=0,
+            special_ids={9},
+            forbid_special_target=True,
+            backend="sam",
+        )
+
+        self.assertEqual(out.source, "seq:online_exact")
+        self.assertTrue(torch.equal(out.addr_ids, ref["addr_ids"]))
+        self.assertTrue(torch.equal(out.raw_match_lens, ref["raw_match_lens"]))
+        self.assertTrue(torch.equal(out.fired_match_lens, ref["fired_match_lens"]))
+        self.assertTrue(torch.equal(out.valid_mask, ref["valid_mask"]))
+        self.assertTrue(torch.equal(out.special_mask, ref["special_mask"]))
+
+    def test_forward_step_matches_forward_seq_after_memory_prefill(self):
+        engine = rosa_mod.RosaAddressEngine(
+            min_match_len=2,
+            pad_id=0,
+            backend="sam",
+            sequence_mode="online_exact",
+        )
+        state = engine.init_state(batch_size=1)
+        state.prefill(torch.tensor([[4, 5, 1, 2]], dtype=torch.long), pad_id=0)
+        step_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+
+        step = engine.forward_step(step_ids, state)
+        seq = engine.forward_seq(
+            input_ids=step_ids,
+            memory_ids=torch.tensor([[4, 5, 1, 2]], dtype=torch.long),
+        )
+
+        self.assertTrue(torch.equal(step.addr_ids, seq.addr_ids))
+        self.assertTrue(torch.equal(step.raw_match_lens, seq.raw_match_lens))
+        self.assertTrue(torch.equal(step.fired_match_lens, seq.fired_match_lens))
+        self.assertTrue(torch.equal(step.valid_mask, seq.valid_mask))
+        self.assertTrue(torch.equal(step.special_mask, seq.special_mask))
+
+
 class OnlineRosaStateTests(unittest.TestCase):
     def test_prefill_returns_expected_stepwise_meta(self):
         state = rosa_mod.OnlineRosaState(min_match_len=2)

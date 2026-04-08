@@ -1312,6 +1312,92 @@ def rosa_addressing_with_memory(
     return pack_address_meta_batch(batch_meta, device=input_ids.device)
 
 
+class RosaAddressEngine:
+    """统一的 ROSA 地址引擎接口，兼容 reference backend 与 sequence-online 扫描。"""
+
+    def __init__(
+        self,
+        *,
+        min_match_len: int,
+        pad_id: int,
+        backend: str = "sam",
+        sequence_mode: str = "reference_backend",
+        special_ids: Optional[set] = None,
+        forbid_special_target: bool = True,
+        source_type: str = "token_exact",
+    ):
+        self.min_match_len = min_match_len
+        self.pad_id = pad_id
+        self.backend = backend
+        self.sequence_mode = sequence_mode
+        self.special_ids = set(special_ids or set())
+        self.forbid_special_target = forbid_special_target
+        self.source_type = source_type
+
+    def init_state(self, batch_size: int) -> OnlineRosaBatchState:
+        return build_online_rosa_batch_state(
+            batch_size,
+            min_match_len=self.min_match_len,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+            source_type=self.source_type,
+        )
+
+    def forward_step(
+        self,
+        input_ids: torch.Tensor,
+        state: OnlineRosaBatchState,
+        *,
+        device: Optional[torch.device] = None,
+    ) -> RosaAddressBatch:
+        batch = make_rosa_address_batch(
+            state.address_tokens(
+                input_ids,
+                pad_id=self.pad_id,
+                device=device or input_ids.device,
+            ),
+            source=f"step:{self.sequence_mode}",
+        )
+        return batch.to(device) if device is not None else batch
+
+    def forward_seq(
+        self,
+        input_ids: torch.Tensor,
+        memory_ids: Optional[torch.Tensor] = None,
+        *,
+        device: Optional[torch.device] = None,
+    ) -> RosaAddressBatch:
+        if self.sequence_mode == "online_exact":
+            batch_meta = online_rosa_address_meta_with_memory(
+                input_ids=input_ids,
+                memory_ids=memory_ids,
+                min_match_len=self.min_match_len,
+                pad_id=self.pad_id,
+                special_ids=self.special_ids,
+                forbid_special_target=self.forbid_special_target,
+            )
+            batch = make_rosa_address_batch(
+                pack_address_meta_batch(batch_meta, device=input_ids.device),
+                source="seq:online_exact",
+            )
+        elif self.sequence_mode == "reference_backend":
+            batch = make_rosa_address_batch(
+                rosa_addressing_with_memory(
+                    input_ids=input_ids,
+                    memory_ids=memory_ids,
+                    min_match_len=self.min_match_len,
+                    pad_id=self.pad_id,
+                    special_ids=self.special_ids,
+                    forbid_special_target=self.forbid_special_target,
+                    backend=self.backend,
+                ),
+                source=f"seq:reference:{self.backend}",
+            )
+        else:
+            raise ValueError(f"未知 rosa sequence_mode: {self.sequence_mode}")
+        return batch.to(device) if device is not None else batch
+
+
 def sam_rosa_predict(seq: Sequence[int], min_match_len: int = 1) -> Tuple[List[int], List[int]]:
     n = len(seq)
     pred = [-1] * n
@@ -1527,6 +1613,7 @@ class RosaFusedLM(BaseLM):
         inject_layer_ids: Optional[Sequence[int]] = None,
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
+        rosa_seq_address_mode: str = "reference_backend",
         use_context_gate: bool = False,
         rosa_hot_cache_size: int = 0,
         special_ids: Optional[set] = None,
@@ -1549,11 +1636,20 @@ class RosaFusedLM(BaseLM):
         self.inject_layers = len(self.inject_layer_ids)
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
+        self.rosa_seq_address_mode = rosa_seq_address_mode
         self.use_context_gate = use_context_gate
         self.rosa_hot_cache_size = max(0, int(rosa_hot_cache_size))
         self.special_ids = special_ids or set()
         self.forbid_special_target = forbid_special_target
         self.use_match_len_gate = use_match_len_gate
+        self.address_engine = RosaAddressEngine(
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            backend=rosa_backend,
+            sequence_mode=rosa_seq_address_mode,
+            special_ids=self.special_ids,
+            forbid_special_target=forbid_special_target,
+        )
         self.rosa_value_store = RosaValueStore(
             vocab_size=cfg.vocab_size,
             dim=cfg.dim,
@@ -1623,12 +1719,7 @@ class RosaFusedLM(BaseLM):
         return self.rosa_hot_cache.stats(top_k=top_k)
 
     def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
-        return build_online_rosa_batch_state(
-            batch_size,
-            min_match_len=self.min_match_len,
-            special_ids=self.special_ids,
-            forbid_special_target=self.forbid_special_target,
-        )
+        return self.address_engine.init_state(batch_size)
 
     def init_prefetcher(
         self,
@@ -1677,23 +1768,17 @@ class RosaFusedLM(BaseLM):
             )
 
         if rosa_online_state is not None:
-            addressed = rosa_online_state.address_tokens(
+            return self.address_engine.forward_step(
                 input_ids,
-                pad_id=self.pad_id,
+                rosa_online_state,
                 device=input_ids.device,
             )
-            return make_rosa_address_batch(addressed, source="online")
 
-        addressed = rosa_addressing_with_memory(
+        return self.address_engine.forward_seq(
             input_ids=input_ids,
             memory_ids=rosa_memory_ids,
-            min_match_len=self.min_match_len,
-            pad_id=self.pad_id,
-            special_ids=self.special_ids,
-            forbid_special_target=self.forbid_special_target,
-            backend=self.rosa_backend,
+            device=input_ids.device,
         )
-        return make_rosa_address_batch(addressed, source=f"memory:{self.rosa_backend}")
 
     def build_rosa_injection_payload(
         self,
@@ -2245,6 +2330,9 @@ def main():
     parser.add_argument("--rosa_scale", type=float, default=0.25)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"],
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
+    parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
+                        choices=["reference_backend", "online_exact"],
+                        help="reference_backend 使用现有整段 reference 地址逻辑；online_exact 使用左上下文在线扫描整段。")
     parser.add_argument("--rosa_context_gate", action="store_true",
                         help="启用 Engram 风格的 context-aware gate。")
     parser.add_argument("--rosa_hot_cache_size", type=int, default=0,
@@ -2322,6 +2410,7 @@ def main():
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
+    print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
     print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
@@ -2372,6 +2461,7 @@ def main():
         inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        rosa_seq_address_mode=args.rosa_seq_address_mode,
         use_context_gate=args.rosa_context_gate,
         rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
@@ -2420,6 +2510,7 @@ def main():
         inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        rosa_seq_address_mode=args.rosa_seq_address_mode,
         use_context_gate=args.rosa_context_gate,
         rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
@@ -2455,6 +2546,7 @@ def main():
             "inject_layer_ids": parse_int_csv_arg(args.rosa_inject_layer_ids),
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
+            "seq_address_mode": args.rosa_seq_address_mode,
             "context_gate": args.rosa_context_gate,
             "hot_cache_size": args.rosa_hot_cache_size,
         },

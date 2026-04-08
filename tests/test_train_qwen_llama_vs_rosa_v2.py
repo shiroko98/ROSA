@@ -406,6 +406,55 @@ class RosaInjectionLayerSelectionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(front_out["logits"], explicit_out["logits"], atol=1e-6))
 
 
+class RosaSequenceAddressModeTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_model_online_exact_address_mode_matches_reference_backend(self):
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        rosa_mod.set_seed(6161)
+        reference_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="reference_backend",
+        )
+        rosa_mod.set_seed(6161)
+        online_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="online_exact",
+        )
+
+        reference_batch = reference_model.compute_rosa_address_batch(
+            input_ids,
+            rosa_memory_ids=memory_ids,
+        )
+        online_batch = online_model.compute_rosa_address_batch(
+            input_ids,
+            rosa_memory_ids=memory_ids,
+        )
+
+        self.assertTrue(torch.equal(reference_batch.addr_ids, online_batch.addr_ids))
+        self.assertTrue(torch.equal(reference_batch.raw_match_lens, online_batch.raw_match_lens))
+        self.assertTrue(torch.equal(reference_batch.fired_match_lens, online_batch.fired_match_lens))
+        self.assertTrue(torch.equal(reference_batch.valid_mask, online_batch.valid_mask))
+        self.assertTrue(torch.equal(reference_batch.special_mask, online_batch.special_mask))
+
+
 class RosaHotCacheIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.cfg = rosa_mod.ModelConfig(

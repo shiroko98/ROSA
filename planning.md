@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
-- 当前状态：已完成旧主线 P1；新增 `ROSA_在线主线重构_TODO.md`，准备把 precompute 训练路径降级为 reference
+- 当前状态：已完成 `AddressEngine.forward_seq()` 第一版；下一步准备把训练数据默认输入从 precompute 切向 token/memory
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -48,13 +48,16 @@
 - 已在 `rosa_runtime.py` 中新增 `RosaHotAddressCache`，支持按层 LRU 热点缓存、频次统计与 top-hot 地址报告。
 - 已在 `RosaFusedLM` 中接入 `--rosa_hot_cache_size`，并将命中率、fill/evict、active entries 注入 profiling / eval 输出。
 - 小型 cache smoke 已补齐；当前在 `min_match_len=1` 的 toy profile 上，prefill / decode token hit rate 约为 `0.98 / 0.96`，说明热点地址读取显著减少；由于 value backend 仍是本地 embedding，端到端平均时延基本持平。
+- 已新增 `RosaAddressEngine`，统一 sequence-level `forward_seq()` 与 decode-level `forward_step()` 接口。
+- 已新增 `--rosa_seq_address_mode reference_backend|online_exact`，当前可在不依赖预计算地址表的情况下跑整段 online sequence addressing。
+- 已用单测与 smoke 验证 `online_exact` 与现有 reference 语义对齐。
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
 1. 按 `ROSA_在线主线重构_TODO.md` 落地新的训练主线。
-2. 先实现 `AddressEngine.forward_seq()`，让训练在 teacher forcing 下在线生成整段地址。
-3. 再将 `DocChunkDataset` 从默认依赖 `rosa_precomputed_ids` 切换为默认只提供 token / memory。
+2. 将 `DocChunkDataset` 从默认依赖 `rosa_precomputed_ids` 切换为默认只提供 token / memory。
+3. 让训练主前向在 teacher forcing 下优先走 `AddressEngine.forward_seq()`。
 4. 中期按新 TODO 接入 `ROSA-DocMemory`，让外部检索文档可作为 side memory。
 5. 再进一步规划 `ROSA × Engram` 的 hybrid memory 方案。
 
