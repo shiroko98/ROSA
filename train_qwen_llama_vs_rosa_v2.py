@@ -1185,8 +1185,21 @@ class RosaFusedLM(BaseLM):
     def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
         return self.address_engine.init_state(batch_size)
 
-    def init_online_session(self, batch_size: int) -> RosaBatchSession:
-        return RosaBatchSession(self, batch_size)
+    def init_online_session(
+        self,
+        batch_size: int,
+        *,
+        use_prefetch: bool = False,
+        use_pinned_prefetch: bool = False,
+        prefetch_workers: int = 1,
+    ) -> RosaBatchSession:
+        return RosaBatchSession(
+            self,
+            batch_size,
+            use_prefetch=use_prefetch,
+            use_pinned_prefetch=use_pinned_prefetch,
+            prefetch_workers=prefetch_workers,
+        )
 
     def init_prefetcher(
         self,

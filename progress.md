@@ -26,6 +26,7 @@
 - [x] 在线主线 P0-5: 在线训练 vs reference 预计算一致性回归
 - [x] 在线主线 P1-3: 用真正的 suffix automaton state 替换 list-state
 - [x] 在线主线 P1-2: 统一推理主形态（prefill + decode 共用 RosaState）
+- [x] 在线主线 P1-4: 让 prefetch / staging / hot cache 服务于新主线
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -116,6 +117,11 @@
   - `decode_step()`
   - `snapshot()`
   - `reset()`
+- `RosaBatchSession` 现已支持：
+  - `schedule_decode_step()`
+  - `prefetch_stats()`
+  - 预取开启时的 schedule/runtime 双状态生命周期
+- `--rosa_prefetch` 路径现已挂到 session 主线，不再由 profiling 脚本手工维护独立 prefetch state
 
 ## 自我验证记录
 
@@ -135,7 +141,8 @@
 - `conda run -n model python profile_rosa_online_baseline.py ... --train_consistency_samples 4`（在线主线 P0-5 一致性 smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_sam`（在线主线 P1-3 smoke）
 - `conda run -n model python -m unittest tests.test_rosa_session tests.test_profile_rosa_online_baseline tests.test_scan_rosa_injection_layers`（在线主线 P1-2 session smoke）
-- 结果：共 50 个测试，全部通过；在线主线 P0、P1-3、P1-2 均已落地。
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_sam --rosa_prefetch --rosa_hot_cache_size 8`（在线主线 P1-4 smoke）
+- 结果：共 51 个测试，全部通过；在线主线 P0、P1-3、P1-2、P1-4 均已落地。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
 - 训练入口切换结论：当前默认训练主线已不再依赖 `rosa_precomputed_ids`；reference 预计算路径仍可通过显式 `train_mode` 单独回归。
@@ -143,6 +150,7 @@
 - 一致性回归结论：当前 `online_seq` 训练样本地址路径与 `reference_precompute` 逐位置完全对齐，logits 也保持数值一致。
 - 在线 SAM 结论：当前 `online_sam` 的 prefill/step 路径已与 reference backend 对齐，可作为后续统一 prefill/decode 生命周期的主状态结构。
 - session 结论：当前 online prefill/decode 已共享同一 `RosaState` 生命周期，状态快照与数值结果都保持稳定。
+- prefetch 主线结论：当前 prefetch / staging / hot cache 已正式挂到 `RosaBatchSession`；语义保持对齐，decode smoke 上 hot cache token hit rate 已可观测到 `0.8`。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
@@ -154,6 +162,7 @@
   - `outputs/profile_p1_hot_cache_on_m1/profile_report.json`
   - `outputs/profile_p0_train_path_consistency/profile_report.json`
   - `outputs/profile_p1_online_sam_smoke/profile_report.json`
+  - `outputs/profile_p1_session_prefetch_smoke/profile_report.json`
 
 ## 下一步
 
@@ -163,7 +172,7 @@
 - 已在在线主线 TODO 中补充：
   - `ROSA-DocMemory`：外部检索文档作为 side memory
   - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
-- 下一步优先把 prefetch / staging / hot cache 正式挂到 `RosaBatchSession` 主线上，再继续固化在线训练 V1 配方。
+- 下一步优先固化在线训练 V1 配方，再补统一训练/推理注入层 sweep 协议。
 
 ## 备注
 

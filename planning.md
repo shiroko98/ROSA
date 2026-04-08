@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
-- 当前状态：已完成在线主线 `P1-3` 与 `P1-2`；真正的 suffix automaton state 和统一 session 生命周期都已接入，下一步准备把 prefetch/staging/hot cache 挂到同一条主线
+- 当前状态：已完成在线主线 `P1-3`、`P1-2` 与 `P1-4`；真正的 suffix automaton state、统一 session 生命周期和 prefetch/cache 主线都已接入，下一步准备固化在线训练 V1 配方
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -86,13 +86,21 @@
   - `prefill_seq()` 与旧 `forward_online()` 数值一致
   - `prefill + decode_step()` 与 memory reference 路径对齐
   - snapshot 能稳定反映 token 计数与状态生命周期
+- `RosaBatchSession` 现已支持：
+  - `schedule_decode_step()`
+  - `prefetch_stats()`
+  - 预取开启时的独立 schedule/runtime state 生命周期
+- `profile_rosa_online_baseline.py --rosa_prefetch` 现已通过 `RosaBatchSession` 走主线，不再绕过 session 单独管理预取状态。
+- 当前 smoke 报告：
+  - `outputs/profile_p1_session_prefetch_smoke/profile_report.json`
+  - decode `hot_cache token_hit_rate = 0.8`
+  - 地址一致性与 logit diff 仍保持对齐
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 在新 session 上接通 prefetch / staging / hot cache 主线。
-2. 固化在线训练 V1 配方与小样本实验入口。
-3. 最后补统一训练/推理注入层 sweep 协议。
+1. 固化在线训练 V1 配方与小样本实验入口。
+2. 最后补统一训练/推理注入层 sweep 协议。
 
 ## 自我验证清单
 

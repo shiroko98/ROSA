@@ -138,6 +138,17 @@ class ExactMatchRosaState:
             last_address=self._last_address,
         )
 
+    def clone(self) -> "ExactMatchRosaState":
+        cloned = ExactMatchRosaState(
+            min_match_len=self.min_match_len,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+            source_type=self.source_type,
+        )
+        cloned._token_ids = list(self._token_ids)
+        cloned._last_address = self._last_address
+        return cloned
+
 
 def _coerce_batch_token_rows(token_ids: Any) -> List[List[int]]:
     if isinstance(token_ids, torch.Tensor):
@@ -228,6 +239,9 @@ class OnlineRosaBatchState:
 
     def snapshot(self) -> List[RosaStateSnapshot]:
         return [state.snapshot() for state in self.states]
+
+    def clone(self) -> "OnlineRosaBatchState":
+        return OnlineRosaBatchState([state.clone() for state in self.states])
 
 
 def build_online_rosa_batch_state(
@@ -439,6 +453,22 @@ class SuffixAutomatonRosaState:
             num_tokens=len(self._token_ids),
             last_address=self._last_address,
         )
+
+    def clone(self) -> "SuffixAutomatonRosaState":
+        cloned = SuffixAutomatonRosaState(
+            min_match_len=self.min_match_len,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+            source_type=self.source_type,
+        )
+        cloned._token_ids = list(self._token_ids)
+        cloned._last_address = self._last_address
+        cloned._trans = [row.copy() for row in self._trans]
+        cloned._link = list(self._link)
+        cloned._length = list(self._length)
+        cloned._endpos = list(self._endpos)
+        cloned._last = self._last
+        return cloned
 
 
 OnlineRosaState = SuffixAutomatonRosaState

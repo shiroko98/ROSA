@@ -579,41 +579,31 @@ def run_decode_micro_profile(
         return last, all_address
 
     def run_prefetched_decode(prefill_rows, decode_rows):
-        schedule_state = rosa_model.init_online_state(len(prefill_rows))
-        prefill_tensor = torch.tensor(prefill_rows, dtype=torch.long)
-        schedule_state.prefill(prefill_tensor, pad_id=pad_id)
-        prefetcher = rosa_model.init_prefetcher(
-            use_async=True,
-            use_pinned_memory=use_pinned_prefetch,
-            max_workers=1,
+        session = rosa_model.init_online_session(
+            len(prefill_rows),
+            use_prefetch=True,
+            use_pinned_prefetch=use_pinned_prefetch,
+            prefetch_workers=1,
         )
+        prefill_tensor = torch.tensor(prefill_rows, dtype=torch.long, device=device)
+        session.prefill_seq(prefill_tensor)
         address_batches = []
-        step_tensors = []
+        last = None
+        all_address = []
         for step_idx in range(len(decode_rows[0])):
             step_values = [[row[step_idx]] for row in decode_rows]
             step_ids = torch.tensor(step_values, dtype=torch.long, device=device)
-            step_tensors.append(step_ids)
-            address_batch = rosa_model.schedule_rosa_prefetch(
-                prefetcher,
-                f"step-{step_idx}",
+            request_key = session.schedule_decode_step(
                 step_ids,
-                rosa_online_state=schedule_state,
+                request_key=f"step-{step_idx}",
             )
-            address_batches.append(address_batch)
+            address_batches.append((step_ids, request_key))
 
-        last = None
-        all_address = []
-        for step_idx, step_ids in enumerate(step_tensors):
-            payload = rosa_model.consume_rosa_prefetch(
-                prefetcher,
-                f"step-{step_idx}",
-                device=device,
-                fallback_address_batch=address_batches[step_idx],
-            )
-            last = rosa_model.forward_prefetched(step_ids, payload)
-            all_address.append(payload.address)
-        stats = prefetcher.stats()
-        prefetcher.shutdown()
+        for step_ids, request_key in address_batches:
+            last = session.decode_step(step_ids, request_key=request_key)
+            all_address.append(session.last_payload.address)
+        stats = session.prefetch_stats()
+        session.close()
         return last, all_address, stats
 
     for batch in batches:

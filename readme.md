@@ -31,6 +31,8 @@ git log --oneline -5
   - `session = model.init_online_session(batch_size)`
   - `session.prefill_seq(prompt_ids)`
   - `session.decode_step(step_ids)`
+  - `session.schedule_decode_step(step_ids)`（启用 prefetch 时）
+  - `session.prefetch_stats()`
   - `session.snapshot()`
 - 当前版本仍使用共享 `embed_tokens` 作为 value，适合先验证在线路径与语义一致性。
 

@@ -99,6 +99,39 @@ class RosaBatchSessionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             session.decode_step(torch.tensor([[2]], dtype=torch.long))
 
+    def test_prefetch_enabled_session_matches_regular_decode_and_reports_stats(self):
+        rosa_mod.set_seed(3034)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            rosa_value_mode="per_layer",
+            use_context_gate=True,
+        )
+        model.eval()
+
+        prefill = torch.tensor([[1, 2, 1]], dtype=torch.long)
+        decode_step = torch.tensor([[2]], dtype=torch.long)
+
+        with torch.no_grad():
+            regular = model.init_online_session(batch_size=1)
+            regular.prefill_seq(prefill)
+            regular_out = regular.decode_step(decode_step)
+
+            prefetched = model.init_online_session(batch_size=1, use_prefetch=True)
+            prefetched.prefill_seq(prefill)
+            key = prefetched.schedule_decode_step(decode_step, request_key="step-0")
+            prefetched_out = prefetched.decode_step(decode_step, request_key=key)
+
+        self.assertTrue(torch.allclose(regular_out["logits"], prefetched_out["logits"], atol=1e-6))
+        snap = prefetched.snapshot()
+        self.assertTrue(snap.prefetch_enabled)
+        stats = prefetched.prefetch_stats()
+        self.assertGreaterEqual(stats.get("requests", 0.0), 1.0)
+        self.assertGreaterEqual(stats.get("staged_payloads", 0.0), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
