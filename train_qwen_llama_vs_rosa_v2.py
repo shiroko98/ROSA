@@ -372,6 +372,7 @@ class DocChunkDataset(Dataset):
         stride: Optional[int] = None,
         rosa_memory_tokens: int = 512,
         global_memory_tokens: int = 0,
+        full_doc_memory: bool = False,
         doc_global_prefixes: Optional[Sequence[Sequence[int]]] = None,
         shared_global_memory: Optional[Sequence[int]] = None,
         doc_precomputed_rosa: Optional[Sequence[Dict[str, Sequence[int]]]] = None,
@@ -380,6 +381,7 @@ class DocChunkDataset(Dataset):
         self.pad_id = pad_id
         self.rosa_memory_tokens = rosa_memory_tokens
         self.global_memory_tokens = global_memory_tokens
+        self.full_doc_memory = full_doc_memory
         self.samples: List[Dict[str, List[int]]] = []
         stride = stride or seq_len
         if doc_global_prefixes is not None and len(doc_global_prefixes) != len(docs_tokens):
@@ -407,7 +409,7 @@ class DocChunkDataset(Dataset):
                 x = chunk[:-1]
                 y = chunk[1:]
 
-                mem_start = max(0, start - rosa_memory_tokens)
+                mem_start = 0 if full_doc_memory else max(0, start - rosa_memory_tokens)
                 local_mem = list(ids[mem_start:start])
                 mem = doc_global_prefix + local_mem
                 sample: Dict[str, List[int]] = {
@@ -514,11 +516,23 @@ def build_chunk_datasets(
     rosa_memory_mode: str,
     rosa_global_memory_tokens: int,
     rosa_backend: str,
+    rosa_train_mode: str,
     rosa_min_match_len: int,
     special_ids: Optional[set],
     forbid_special_target: bool,
 ):
-    if rosa_memory_mode == "doc_local" and rosa_backend == "sam":
+    if rosa_train_mode not in {"online_seq", "reference_precompute"}:
+        raise ValueError(f"未知 rosa_train_mode: {rosa_train_mode}")
+
+    using_reference_precompute = (
+        rosa_train_mode == "reference_precompute"
+        and rosa_memory_mode == "doc_local"
+        and rosa_backend == "sam"
+    )
+    effective_train_mode = "reference_precompute" if using_reference_precompute else "online_seq"
+    uses_full_doc_memory = effective_train_mode == "online_seq"
+
+    if using_reference_precompute:
         train_pre = build_doc_local_precomputed_rosa(
             train_tok,
             min_match_len=rosa_min_match_len,
@@ -562,11 +576,16 @@ def build_chunk_datasets(
             doc_precomputed_rosa=test_pre,
         )
         meta = {
+            "requested_train_mode": rosa_train_mode,
+            "effective_train_mode": effective_train_mode,
             "rosa_memory_mode": rosa_memory_mode,
             "doc_local_memory_tokens": 0,
+            "configured_doc_local_memory_tokens": rosa_memory_tokens,
             "global_train_memory_tokens": 0,
             "train_global_memory_size": 0,
             "precomputed_doc_local_sam": True,
+            "uses_full_doc_memory": True,
+            "address_build_policy": "reference_precompute",
             "effective_history": "full_doc_prefix",
             "train_precomputed_docs": len(train_pre),
             "val_precomputed_docs": len(val_pre),
@@ -581,6 +600,7 @@ def build_chunk_datasets(
             pad_id=pad_id,
             stride=stride,
             rosa_memory_tokens=rosa_memory_tokens,
+            full_doc_memory=uses_full_doc_memory,
         )
         val_ds = DocChunkDataset(
             val_tok,
@@ -588,6 +608,7 @@ def build_chunk_datasets(
             pad_id=pad_id,
             stride=stride,
             rosa_memory_tokens=rosa_memory_tokens,
+            full_doc_memory=uses_full_doc_memory,
         )
         test_ds = DocChunkDataset(
             test_tok,
@@ -595,14 +616,24 @@ def build_chunk_datasets(
             pad_id=pad_id,
             stride=stride,
             rosa_memory_tokens=rosa_memory_tokens,
+            full_doc_memory=uses_full_doc_memory,
         )
         meta = {
+            "requested_train_mode": rosa_train_mode,
+            "effective_train_mode": effective_train_mode,
             "rosa_memory_mode": rosa_memory_mode,
-            "doc_local_memory_tokens": rosa_memory_tokens,
+            "doc_local_memory_tokens": 0 if uses_full_doc_memory else rosa_memory_tokens,
+            "configured_doc_local_memory_tokens": rosa_memory_tokens,
             "global_train_memory_tokens": 0,
             "train_global_memory_size": 0,
             "precomputed_doc_local_sam": False,
-            "effective_history": f"doc_local_tail_{rosa_memory_tokens}",
+            "uses_full_doc_memory": uses_full_doc_memory,
+            "address_build_policy": "sequence_online",
+            "effective_history": (
+                "full_doc_prefix_online_seq"
+                if uses_full_doc_memory
+                else f"doc_local_tail_{rosa_memory_tokens}"
+            ),
         }
         return train_ds, val_ds, test_ds, meta
 
@@ -619,6 +650,7 @@ def build_chunk_datasets(
         stride=stride,
         rosa_memory_tokens=rosa_memory_tokens,
         global_memory_tokens=global_cap,
+        full_doc_memory=uses_full_doc_memory,
         doc_global_prefixes=train_prefixes,
     )
     val_ds = DocChunkDataset(
@@ -628,6 +660,7 @@ def build_chunk_datasets(
         stride=stride,
         rosa_memory_tokens=rosa_memory_tokens,
         global_memory_tokens=global_cap,
+        full_doc_memory=uses_full_doc_memory,
         shared_global_memory=full_train_memory,
     )
     test_ds = DocChunkDataset(
@@ -637,15 +670,25 @@ def build_chunk_datasets(
         stride=stride,
         rosa_memory_tokens=rosa_memory_tokens,
         global_memory_tokens=global_cap,
+        full_doc_memory=uses_full_doc_memory,
         shared_global_memory=full_train_memory,
     )
     meta = {
+        "requested_train_mode": rosa_train_mode,
+        "effective_train_mode": effective_train_mode,
         "rosa_memory_mode": rosa_memory_mode,
-        "doc_local_memory_tokens": rosa_memory_tokens,
+        "doc_local_memory_tokens": 0 if uses_full_doc_memory else rosa_memory_tokens,
+        "configured_doc_local_memory_tokens": rosa_memory_tokens,
         "global_train_memory_tokens": global_cap,
         "train_global_memory_size": len(full_train_memory),
         "precomputed_doc_local_sam": False,
-        "effective_history": f"global_train_tail_{global_cap}_plus_doc_local_tail_{rosa_memory_tokens}",
+        "uses_full_doc_memory": uses_full_doc_memory,
+        "address_build_policy": "sequence_online",
+        "effective_history": (
+            f"global_train_tail_{global_cap}_plus_full_doc_prefix"
+            if uses_full_doc_memory
+            else f"global_train_tail_{global_cap}_plus_doc_local_tail_{rosa_memory_tokens}"
+        ),
     }
     return train_ds, val_ds, test_ds, meta
 
@@ -2308,6 +2351,9 @@ def main():
                         help="global_train 模式下可见的全局 train memory token 数；0 表示退化为与 rosa_memory_tokens 相同。")
     parser.add_argument("--rosa_backend", type=str, default="sam", choices=["sam", "naive"],
                         help="ROSA 检索后端。sam 更接近原版 ROSA；naive 用于回归对照。")
+    parser.add_argument("--rosa_train_mode", type=str, default="online_seq",
+                        choices=["online_seq", "reference_precompute"],
+                        help="online_seq 为新的在线训练主线；reference_precompute 保留旧的 doc-local SAM 预计算回归路径。")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -2330,7 +2376,7 @@ def main():
     parser.add_argument("--rosa_scale", type=float, default=0.25)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"],
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
-    parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
+    parser.add_argument("--rosa_seq_address_mode", type=str, default="online_exact",
                         choices=["reference_backend", "online_exact"],
                         help="reference_backend 使用现有整段 reference 地址逻辑；online_exact 使用左上下文在线扫描整段。")
     parser.add_argument("--rosa_context_gate", action="store_true",
@@ -2409,6 +2455,7 @@ def main():
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
+    print(f"ROSA train mode: {args.rosa_train_mode}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
@@ -2431,6 +2478,7 @@ def main():
         rosa_memory_mode=args.rosa_memory_mode,
         rosa_global_memory_tokens=args.rosa_global_memory_tokens,
         rosa_backend=args.rosa_backend,
+        rosa_train_mode=args.rosa_train_mode,
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
@@ -2440,6 +2488,8 @@ def main():
     print(f"device: {device}")
     if memory_meta.get("precomputed_doc_local_sam"):
         print("ROSA 文档内历史: full doc prefix (SAM precompute)")
+    elif memory_meta.get("uses_full_doc_memory"):
+        print("ROSA 文档内历史: full doc prefix (online_seq)")
     else:
         print(f"ROSA 文档内 memory tokens: {memory_meta['doc_local_memory_tokens']}")
     if memory_meta["rosa_memory_mode"] == "global_train":
@@ -2447,6 +2497,8 @@ def main():
         print(f"训练集全局 memory 实际长度: {memory_meta['train_global_memory_size']}")
     if memory_meta.get("precomputed_doc_local_sam"):
         print("ROSA 特征: doc-local SAM 预计算模式")
+    else:
+        print(f"ROSA 特征: 在线 sequence addressing ({memory_meta['effective_train_mode']})")
     cfg = build_model_config(args, tokenizer)
 
     set_seed(args.seed)
@@ -2537,6 +2589,8 @@ def main():
         },
         "rosa": {
             "backend": args.rosa_backend,
+            "train_mode": args.rosa_train_mode,
+            "effective_train_mode": memory_meta["effective_train_mode"],
             "memory_mode": args.rosa_memory_mode,
             "memory_tokens": memory_meta["doc_local_memory_tokens"],
             "global_memory_tokens": memory_meta["global_train_memory_tokens"],

@@ -565,14 +565,18 @@ class GlobalTrainMemoryTests(unittest.TestCase):
             rosa_memory_mode="global_train",
             rosa_global_memory_tokens=3,
             rosa_backend="sam",
+            rosa_train_mode="online_seq",
             rosa_min_match_len=2,
             special_ids=set(),
             forbid_special_target=True,
         )
 
+        self.assertEqual(meta["requested_train_mode"], "online_seq")
+        self.assertEqual(meta["effective_train_mode"], "online_seq")
         self.assertEqual(meta["rosa_memory_mode"], "global_train")
         self.assertEqual(meta["global_train_memory_tokens"], 3)
         self.assertEqual(meta["train_global_memory_size"], 3)
+        self.assertTrue(meta["uses_full_doc_memory"])
 
         first_train = train_ds[0]
         second_train = train_ds[1]
@@ -585,7 +589,39 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         self.assertEqual(first_val["rosa_memory_ids"].tolist(), [21, 22, 23])
         self.assertEqual(len(test_ds), len(val_ds))
 
-    def test_doc_local_sam_builds_precomputed_chunk_features(self):
+    def test_doc_local_online_seq_uses_full_doc_prefix_without_precomputed_fields(self):
+        docs = [[1, 2, 3, 4, 5]]
+        train_ds, val_ds, test_ds, meta = rosa_mod.build_chunk_datasets(
+            docs,
+            docs,
+            docs,
+            seq_len=2,
+            pad_id=0,
+            stride=1,
+            rosa_memory_tokens=1,
+            rosa_memory_mode="doc_local",
+            rosa_global_memory_tokens=0,
+            rosa_backend="sam",
+            rosa_train_mode="online_seq",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+        )
+
+        self.assertEqual(meta["requested_train_mode"], "online_seq")
+        self.assertEqual(meta["effective_train_mode"], "online_seq")
+        self.assertFalse(meta["precomputed_doc_local_sam"])
+        self.assertTrue(meta["uses_full_doc_memory"])
+        self.assertEqual(meta["effective_history"], "full_doc_prefix_online_seq")
+
+        third = train_ds[2]
+        self.assertEqual(third["rosa_memory_ids"].tolist(), [1, 2])
+        self.assertNotIn("rosa_precomputed_ids", third)
+        self.assertNotIn("rosa_precomputed_match_lens", third)
+        self.assertNotIn("rosa_precomputed_raw_best_lens", third)
+        self.assertEqual(len(val_ds), len(test_ds))
+
+    def test_doc_local_sam_builds_precomputed_chunk_features_in_reference_mode(self):
         docs = [[1, 2, 1, 2, 3]]
         train_ds, val_ds, test_ds, meta = rosa_mod.build_chunk_datasets(
             docs,
@@ -598,11 +634,14 @@ class GlobalTrainMemoryTests(unittest.TestCase):
             rosa_memory_mode="doc_local",
             rosa_global_memory_tokens=0,
             rosa_backend="sam",
+            rosa_train_mode="reference_precompute",
             rosa_min_match_len=2,
             special_ids=set(),
             forbid_special_target=True,
         )
 
+        self.assertEqual(meta["requested_train_mode"], "reference_precompute")
+        self.assertEqual(meta["effective_train_mode"], "reference_precompute")
         self.assertTrue(meta["precomputed_doc_local_sam"])
         first = train_ds[0]
         second = train_ds[1]

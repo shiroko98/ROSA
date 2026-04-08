@@ -55,15 +55,19 @@ git log --oneline -5
 ## Address Engine
 
 - 统一入口：`RosaAddressEngine`
+- 训练主线开关：`--rosa_train_mode online_seq|reference_precompute`
 - 当前支持两种 sequence 模式：
   - `--rosa_seq_address_mode reference_backend`
   - `--rosa_seq_address_mode online_exact`
 - 含义：
+  - `online_seq`：新的训练主线，数据集默认只提供 `input_ids / labels / optional_memory`，由前向内部调用 `AddressEngine.forward_seq()`
+  - `reference_precompute`：保留旧的 `doc_local + sam precompute` 回归路径
   - `reference_backend`：继续走现有整段 reference 地址逻辑
   - `online_exact`：按左上下文顺序扫描整段，生成 `[B, T]` 地址结果
 - 当前用途：
   - 作为在线训练主线的第一版统一入口
-  - 暂时不改变 `doc_local + sam precompute` 的默认训练路径
+  - 当前训练默认已切到 `online_seq + online_exact`
+  - `doc_local` / `global_train` 在线模式默认提供 `full doc prefix` 左侧 memory，用于和旧 reference 路径对齐
 
 ## Prefetch / Staging
 
