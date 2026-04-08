@@ -260,6 +260,12 @@
   - 在线 SAM sequence 路径的高性能实现
   - memory window / bookmark
   - 状态快照 / chunk 起点恢复
+- 已把后续性能优化 backlog 细化写回 `ROSA_在线主线重构_TODO.md`，当前重点候选包括：
+  - async overlap v2/v3（queue depth / process worker / pinned buffer）
+  - `sam_rosa_predict` 的 C++ CPU / CUDA / Triton 版
+  - memory window / bookmark
+  - snapshot + 短 replay
+  - 更细粒度 timing 口径统一
 - 地址异步预取结论：当前 `8/4/4` 小实验里，在不启用训练地址缓存的情况下：
   - `step ~103.3ms -> ~69.1ms`
   - `timing_model_rosa_address_ms ~44.7ms -> ~0.5ms`

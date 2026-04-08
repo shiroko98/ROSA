@@ -24,6 +24,39 @@
 - 仍保留：`--rosa_online_sam_impl stateful` 作为逐 token SAM 回归/对照实现
 - 后续真正的高性能目标不再是 Python 级“快一点”，而是进一步下沉到 C++/CUDA/Triton 等更低开销实现
 
+## 性能优化待办补充
+
+- 训练地址异步预取 v2
+  - 从当前 `1 worker + 1 batch ahead` 升级到可配置 queue depth
+  - 比较 thread / process 两种实现
+  - 支持按 batch token 数做更稳的预取调度
+- 训练地址异步预取 v3
+  - 把地址计算、batch 准备、host->device 拷贝拆成独立阶段
+  - 尝试 pinned host buffer，减少主线程等待
+  - 在 timing 中单独记录 queue wait / prepare wait / copy wait
+- `online_sam` sequence C++ CPU 实现
+  - 先给 `sam_rosa_predict` 做编译型 CPU 版本
+  - 目标是在不依赖 GPU kernel 的情况下，先消掉 Python 循环和 dict 开销
+- `online_sam` sequence CUDA/Triton 实现
+  - 目标对象是训练期 `[B, T]` 的 sequence addressing
+  - 不直接翻译 decode `update_one()`，而是做 batch-sequence fused kernel
+  - 保持与 step/session stateful 路径逐位置一致
+- 地址支路长度控制
+  - 默认 `full doc prefix` 代价太高，需要支持更积极的 memory window
+  - 实验固定 tail window / 动态 window / bookmark 触发
+  - 把 coverage-loss-speed 三者一起记进报告
+- 状态快照恢复
+  - 对大数据集支持 chunk 起点 snapshot
+  - 用“snapshot + 短 replay”替代“每次从长前缀重扫”
+  - 减少大规模训练时的内存与预处理压力
+- 训练样本调度优化
+  - 增加按长度/地址成本的 bucketing
+  - 减少 batch 内 address branch 的拖尾
+  - 让 overlap 更容易吃满
+- 更细粒度 profiling
+  - 区分地址构建、地址打包、payload lookup、host/device transfer
+  - 在 train/profile/sweep 三条路径输出统一 timing 口径
+
 ## 在线主线路线图
 
 | 优先级 | 任务 | 目标输出 | 完成标准 | 主要风险 | 工程上的细分实现 |
