@@ -17,6 +17,13 @@
   - 组件生命周期稳定
   - 可逐步扩展到更大的 ValueStore / compression / 稀疏读写
 
+## 当前推进状态
+
+- 已完成：训练期地址支路异步化 / overlap（默认主线已启用 next-batch 地址异步预取）
+- 已完成第一版：`online_sam` sequence 快路径，默认通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`
+- 仍保留：`--rosa_online_sam_impl stateful` 作为逐 token SAM 回归/对照实现
+- 后续真正的高性能目标不再是 Python 级“快一点”，而是进一步下沉到 C++/CUDA/Triton 等更低开销实现
+
 ## 在线主线路线图
 
 | 优先级 | 任务 | 目标输出 | 完成标准 | 主要风险 | 工程上的细分实现 |

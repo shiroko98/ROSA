@@ -3,6 +3,7 @@ import unittest
 import torch
 
 import train_qwen_llama_vs_rosa_v2 as rosa_mod
+from rosa_addressing import online_sam_address_meta_with_memory
 
 
 class AddressInterfaceTests(unittest.TestCase):
@@ -47,6 +48,46 @@ class AddressInterfaceTests(unittest.TestCase):
 
 
 class RosaAddressEngineTests(unittest.TestCase):
+    def test_online_sam_fast_and_stateful_sequence_paths_match(self):
+        input_ids = torch.tensor(
+            [
+                [1, 2, 1, 2, 3, 1],
+                [7, 8, 7, 8, 9, 7],
+            ],
+            dtype=torch.long,
+        )
+        memory_ids = torch.tensor(
+            [
+                [4, 5, 1, 2, 0, 0],
+                [6, 7, 8, 0, 0, 0],
+            ],
+            dtype=torch.long,
+        )
+
+        fast = online_sam_address_meta_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=2,
+            pad_id=0,
+            special_ids={9},
+            forbid_special_target=True,
+            implementation="fast",
+        )
+        stateful = online_sam_address_meta_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=2,
+            pad_id=0,
+            special_ids={9},
+            forbid_special_target=True,
+            implementation="stateful",
+        )
+
+        self.assertEqual(
+            [[(m.addr_id, m.raw_match_len, m.fired_match_len, m.valid_mask, m.special_mask) for m in row] for row in fast],
+            [[(m.addr_id, m.raw_match_len, m.fired_match_len, m.valid_mask, m.special_mask) for m in row] for row in stateful],
+        )
+
     def test_forward_seq_online_exact_matches_reference_sam(self):
         input_ids = torch.tensor(
             [
@@ -130,6 +171,38 @@ class RosaAddressEngineTests(unittest.TestCase):
         self.assertTrue(torch.equal(out.fired_match_lens, ref["fired_match_lens"]))
         self.assertTrue(torch.equal(out.valid_mask, ref["valid_mask"]))
         self.assertTrue(torch.equal(out.special_mask, ref["special_mask"]))
+
+    def test_forward_seq_online_sam_stateful_impl_matches_fast_impl(self):
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.tensor([[4, 5, 1, 2, 0, 0]], dtype=torch.long)
+
+        fast_engine = rosa_mod.RosaAddressEngine(
+            min_match_len=2,
+            pad_id=0,
+            backend="sam",
+            sequence_mode="online_sam",
+            online_sam_impl="fast",
+            special_ids={9},
+            forbid_special_target=True,
+        )
+        stateful_engine = rosa_mod.RosaAddressEngine(
+            min_match_len=2,
+            pad_id=0,
+            backend="sam",
+            sequence_mode="online_sam",
+            online_sam_impl="stateful",
+            special_ids={9},
+            forbid_special_target=True,
+        )
+
+        fast = fast_engine.forward_seq(input_ids, memory_ids)
+        stateful = stateful_engine.forward_seq(input_ids, memory_ids)
+
+        self.assertTrue(torch.equal(fast.addr_ids, stateful.addr_ids))
+        self.assertTrue(torch.equal(fast.raw_match_lens, stateful.raw_match_lens))
+        self.assertTrue(torch.equal(fast.fired_match_lens, stateful.fired_match_lens))
+        self.assertTrue(torch.equal(fast.valid_mask, stateful.valid_mask))
+        self.assertTrue(torch.equal(fast.special_mask, stateful.special_mask))
 
     def test_forward_step_matches_forward_seq_after_memory_prefill(self):
         engine = rosa_mod.RosaAddressEngine(

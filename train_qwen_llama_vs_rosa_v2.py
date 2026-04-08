@@ -548,6 +548,7 @@ def build_chunk_datasets(
     rosa_backend: str,
     rosa_train_mode: str,
     rosa_seq_address_mode: str,
+    rosa_online_sam_impl: str = "fast",
     rosa_min_match_len: int,
     special_ids: Optional[set],
     forbid_special_target: bool,
@@ -636,6 +637,7 @@ def build_chunk_datasets(
             train_pre = build_sequence_online_precomputed_rosa(
                 train_tok,
                 sequence_mode=rosa_seq_address_mode,
+                online_sam_impl=rosa_online_sam_impl,
                 min_match_len=rosa_min_match_len,
                 special_ids=special_ids,
                 forbid_special_target=forbid_special_target,
@@ -643,6 +645,7 @@ def build_chunk_datasets(
             val_pre = build_sequence_online_precomputed_rosa(
                 val_tok,
                 sequence_mode=rosa_seq_address_mode,
+                online_sam_impl=rosa_online_sam_impl,
                 min_match_len=rosa_min_match_len,
                 special_ids=special_ids,
                 forbid_special_target=forbid_special_target,
@@ -650,6 +653,7 @@ def build_chunk_datasets(
             test_pre = build_sequence_online_precomputed_rosa(
                 test_tok,
                 sequence_mode=rosa_seq_address_mode,
+                online_sam_impl=rosa_online_sam_impl,
                 min_match_len=rosa_min_match_len,
                 special_ids=special_ids,
                 forbid_special_target=forbid_special_target,
@@ -753,6 +757,7 @@ def build_chunk_datasets(
         train_pre = build_sequence_online_precomputed_rosa(
             train_tok,
             sequence_mode=rosa_seq_address_mode,
+            online_sam_impl=rosa_online_sam_impl,
             min_match_len=rosa_min_match_len,
             special_ids=special_ids,
             forbid_special_target=forbid_special_target,
@@ -761,6 +766,7 @@ def build_chunk_datasets(
         val_pre = build_sequence_online_precomputed_rosa(
             val_tok,
             sequence_mode=rosa_seq_address_mode,
+            online_sam_impl=rosa_online_sam_impl,
             min_match_len=rosa_min_match_len,
             special_ids=special_ids,
             forbid_special_target=forbid_special_target,
@@ -769,6 +775,7 @@ def build_chunk_datasets(
         test_pre = build_sequence_online_precomputed_rosa(
             test_tok,
             sequence_mode=rosa_seq_address_mode,
+            online_sam_impl=rosa_online_sam_impl,
             min_match_len=rosa_min_match_len,
             special_ids=special_ids,
             forbid_special_target=forbid_special_target,
@@ -1243,6 +1250,7 @@ class RosaFusedLM(BaseLM):
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
         rosa_seq_address_mode: str = "reference_backend",
+        rosa_online_sam_impl: str = "fast",
         use_context_gate: bool = False,
         rosa_hot_cache_size: int = 0,
         special_ids: Optional[set] = None,
@@ -1266,6 +1274,7 @@ class RosaFusedLM(BaseLM):
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
         self.rosa_seq_address_mode = rosa_seq_address_mode
+        self.rosa_online_sam_impl = rosa_online_sam_impl
         self.use_context_gate = use_context_gate
         self.rosa_hot_cache_size = max(0, int(rosa_hot_cache_size))
         self.special_ids = special_ids or set()
@@ -1276,6 +1285,7 @@ class RosaFusedLM(BaseLM):
             pad_id=pad_id,
             backend=rosa_backend,
             sequence_mode=rosa_seq_address_mode,
+            online_sam_impl=rosa_online_sam_impl,
             special_ids=self.special_ids,
             forbid_special_target=forbid_special_target,
         )
@@ -2101,6 +2111,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_seq_address_mode", type=str, default="online_exact",
                         choices=["reference_backend", "online_exact", "online_sam"],
                         help="reference_backend 使用现有整段 reference 地址逻辑；online_exact 使用 exact-list 在线扫描；online_sam 使用真正的在线 suffix automaton state。")
+    parser.add_argument("--rosa_online_sam_impl", type=str, default="fast", choices=["fast", "stateful"],
+                        help="online_sam 的 sequence 实现。fast 使用整段 SAM 预测快路径；stateful 保留逐 token 状态机回归路径。decode/session 仍使用 stateful update_one。")
     parser.add_argument("--rosa_context_gate", action="store_true",
                         help="启用 Engram 风格的 context-aware gate。")
     parser.add_argument("--rosa_hot_cache_size", type=int, default=0,
@@ -2189,6 +2201,7 @@ def main():
     print(f"ROSA recipe: {recipe_meta['name']}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
+    print(f"ROSA online sam impl: {args.rosa_online_sam_impl}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
     print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     print(f"训练 timing: {args.train_timing}")
@@ -2215,6 +2228,7 @@ def main():
         rosa_backend=args.rosa_backend,
         rosa_train_mode=args.rosa_train_mode,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
@@ -2255,6 +2269,7 @@ def main():
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
         rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
@@ -2311,6 +2326,7 @@ def main():
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
         rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
@@ -2375,6 +2391,7 @@ def main():
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
             "seq_address_mode": args.rosa_seq_address_mode,
+            "online_sam_impl": args.rosa_online_sam_impl,
             "train_address_async": (args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
             "train_address_async_workers": args.rosa_train_address_async_workers,
             "train_address_cache": (args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),

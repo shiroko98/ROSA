@@ -30,6 +30,7 @@
 - [x] 在线主线 P1-1: 固化在线训练 V1 配方
 - [x] 在线主线 P1-5: 训练/推理统一注入层搜索协议
 - [x] 训练阶段 timing 监控与慢点定位
+- [x] 在线主线 P2: `online_sam` sequence 快路径
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -168,6 +169,12 @@
   - `--disable_rosa_train_address_async`
   - `--rosa_train_address_async_workers`
 - `profile_rosa_online_baseline.py` 与 `rosa_layer_sweep.py` 已同步支持该开关，并兼容 cached online_seq 数据集
+- 新增 `--rosa_online_sam_impl fast|stateful`
+- `online_sam` sequence 路径现已支持：
+  - `fast`：整段 `sam_rosa_predict` 快路径
+  - `stateful`：逐 token `SuffixAutomatonRosaState.update_one()` 回归路径
+- `RosaAddressEngine.forward_seq()` 默认走 `fast`；`forward_step()` / session decode 继续保留真实在线 stateful 生命周期
+- 训练地址缓存构建路径也已对齐到 `online_sam_impl`，避免缓存与主线 sequence 实现再次分叉
 
 ## 自我验证记录
 
@@ -196,6 +203,10 @@
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_sam`（cached train-path smoke）
 - `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_seq_address_mode online_sam --disable_rosa_train_address_async --train_timing`（同步地址）
 - `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_seq_address_mode online_sam --train_timing`（异步地址）
+- `conda run -n model python -m unittest tests.test_rosa_online_state.RosaAddressEngineTests tests.test_train_qwen_llama_vs_rosa_v2.RosaSequenceAddressModeTests tests.test_train_qwen_llama_vs_rosa_v2.TrainAddressAsyncLoaderTests tests.test_train_qwen_llama_vs_rosa_v2.TrainingTimingTests`
+- `train_qwen_llama_vs_rosa_v2.py ... --disable_rosa_train_address_async --rosa_online_sam_impl stateful --train_timing`
+- `train_qwen_llama_vs_rosa_v2.py ... --disable_rosa_train_address_async --rosa_online_sam_impl fast --train_timing`
+- `D:\\anaconda\\envs\\model\\python.exe -c \"...online_sam_address_meta_with_memory(... implementation='stateful'/'fast')...\"`（纯地址 microbenchmark）
 - 结果：本次改动相关的 targeted tests 已通过，`profile` smoke 也已通过；`unittest discover -s tests` 在当前 Windows 环境下仍会遇到独立的 tempfile 权限噪声，需要与本次代码逻辑问题区分看待。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
@@ -254,6 +265,15 @@
   - `timing_model_rosa_address_ms ~44.7ms -> ~0.5ms`
   - test 指标保持一致
   - 这是目前更适合保留为默认主线的训练加速方式
+- fast online_sam 结论：
+  - 纯地址 microbenchmark（`B=4, T=128, M=256`）下：
+    - `stateful ~4.734ms`
+    - `fast ~1.836ms`
+    - 地址层约 `2.58x` 加速
+  - 小型同步训练 smoke（关闭 async）下：
+    - `rosa_addr ~40.41ms -> ~39.56ms`
+    - `step ~51.38ms -> ~50.60ms`
+    - 端到端收益较温和，说明当前更大的训练收益仍来自 async overlap；但 `fast` 已经成为更合适的默认 sequence 实现
 
 ## 备注
 

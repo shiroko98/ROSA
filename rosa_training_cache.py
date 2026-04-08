@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
-from rosa_addressing import AddressMeta, ExactMatchRosaState, SuffixAutomatonRosaState
+import torch
+
+from rosa_addressing import (
+    AddressMeta,
+    ExactMatchRosaState,
+    online_sam_address_meta_with_memory,
+    SuffixAutomatonRosaState,
+)
 
 
 def _state_for_sequence_mode(
@@ -37,6 +44,7 @@ def build_sequence_online_precomputed_rosa(
     docs_tokens: Sequence[Sequence[int]],
     *,
     sequence_mode: str,
+    online_sam_impl: str = "fast",
     min_match_len: int,
     special_ids: Optional[set],
     forbid_special_target: bool,
@@ -47,13 +55,26 @@ def build_sequence_online_precomputed_rosa(
 
     out: List[Dict[str, List[int]]] = []
     for doc_idx, ids in enumerate(docs_tokens):
+        prefix = list(memory_prefixes[doc_idx]) if memory_prefixes is not None else []
+        if sequence_mode == "online_sam":
+            batch_rows = online_sam_address_meta_with_memory(
+                input_ids=torch.tensor([list(ids)], dtype=torch.long),
+                memory_ids=torch.tensor([prefix], dtype=torch.long) if prefix else None,
+                min_match_len=min_match_len,
+                pad_id=-1,
+                special_ids=special_ids,
+                forbid_special_target=forbid_special_target,
+                implementation=online_sam_impl,
+            )
+            out.append(_meta_rows_to_precomputed(batch_rows[0]))
+            continue
+
         state = _state_for_sequence_mode(
             sequence_mode,
             min_match_len=min_match_len,
             special_ids=special_ids,
             forbid_special_target=forbid_special_target,
         )
-        prefix = list(memory_prefixes[doc_idx]) if memory_prefixes is not None else []
         if prefix:
             state.prefill(prefix)
         rows = state.prefill(ids)

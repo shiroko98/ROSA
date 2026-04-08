@@ -47,6 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
                         choices=["reference_backend", "online_exact", "online_sam"])
+    parser.add_argument("--rosa_online_sam_impl", type=str, default="fast", choices=["fast", "stateful"])
     parser.add_argument("--enable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--disable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--rosa_context_gate", action="store_true")
@@ -208,6 +209,7 @@ def build_rosa_model(args, tokenizer, device: torch.device, *, seq_address_mode:
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         rosa_seq_address_mode=seq_address_mode or args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
         rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
@@ -277,6 +279,7 @@ def run_train_path_consistency_profile(
         rosa_backend=args.rosa_backend,
         rosa_train_mode="online_seq",
         rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
@@ -298,6 +301,7 @@ def run_train_path_consistency_profile(
         rosa_backend=args.rosa_backend,
         rosa_train_mode="reference_precompute",
         rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
@@ -821,6 +825,7 @@ def build_report(args) -> Dict[str, Any]:
             "rosa_scale": args.rosa_scale,
             "rosa_value_mode": args.rosa_value_mode,
             "rosa_seq_address_mode": args.rosa_seq_address_mode,
+            "rosa_online_sam_impl": args.rosa_online_sam_impl,
             "rosa_context_gate": args.rosa_context_gate,
             "rosa_hot_cache_size": args.rosa_hot_cache_size,
             "rosa_prefetch": args.rosa_prefetch,

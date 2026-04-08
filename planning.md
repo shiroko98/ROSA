@@ -12,6 +12,7 @@
 - 当前补充优化：已完成在线训练地址缓存，将 `online_seq + online_exact/online_sam` 的训练期地址构建前移到数据集阶段，优先缓解 `model_rosa_address` 瓶颈
 - 当前策略调整：训练地址缓存不再作为默认主路径，后续以“异步地址支路 + 高性能 SAM sequence 实现”为优先优化方向
 - 当前进展：训练地址异步预取已落地，可在不持久缓存整数据集的前提下，把 `online_seq` 地址准备与 GPU 主干训练做 overlap
+- 当前进展：`online_sam` 的 sequence 快路径已落地，默认可通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`；`stateful` 保留为逐 token 回归实现
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -121,13 +122,35 @@
   - `outputs/scan_p1_train_profile_smoke/layer_scan_report.json`
   - 每个层位组合会同时产出 `profile_report.json` 和 `train_summary.json`
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
+- 已新增 `--rosa_online_sam_impl fast|stateful`，并把 `online_sam` 的训练/sequence 路径正式拆成：
+  - `fast`：整段 array-backed `sam_rosa_predict`
+  - `stateful`：逐 token `SuffixAutomatonRosaState.update_one()`
+- `forward_step()` / session decode 仍保留真实在线 `stateful` 生命周期；只对 `forward_seq()` 做高性能下沉
+- 已补 fast vs stateful 一致性回归，并验证：
+  - helper 级地址元数据一致
+  - `RosaAddressEngine.forward_seq()` 一致
+  - `RosaFusedLM` address/logits 一致
+- 纯地址 microbenchmark（`B=4, T=128, M=256`）当前结果：
+  - `stateful ~4.734ms`
+  - `fast ~1.836ms`
+  - 地址层约 `2.58x` 加速
+- 小型同步训练 smoke（关闭 async）当前结果：
+  - `rosa_addr ~40.41ms -> ~39.56ms`
+  - `step ~51.38ms -> ~50.60ms`
+  - 端到端收益较温和，但训练指标与地址输出保持一致
 
 ## 下一任务
 
 1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
 2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
-3. 训练性能优化先记为后续项：在保持 `online_seq` 定义不变的前提下，尝试地址支路 CPU worker 前移 / next-batch overlap，而不是退回旧离线持久 precompute。
-4. 当前已用 `--train_timing` 验证并完成第一轮修复：小实验里 `model_rosa_address` 已从 `~85ms` 降到 `~0.2ms`；后续若继续优化，应继续针对地址支路，而不是优先改主干或 payload。
+3. 训练性能优化后续优先项：
+   - 地址支路 CPU worker 前移 / next-batch overlap
+   - `online_sam` sequence 快路径进一步下沉到 C++/CUDA/Triton
+   - memory window / bookmark
+   - 状态快照 / chunk 起点恢复
+4. 当前已用 `--train_timing` 验证并完成两轮修复：
+   - async overlap 把训练中等待地址的成本压到近零
+   - `fast online_sam` 把纯 sequence 地址层成本压到 `stateful` 的约 `39%`
 
 ## 自我验证清单
 

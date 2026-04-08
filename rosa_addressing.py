@@ -474,7 +474,7 @@ class SuffixAutomatonRosaState:
 OnlineRosaState = SuffixAutomatonRosaState
 
 
-def online_sam_address_meta_with_memory(
+def _stateful_online_sam_address_meta_with_memory(
     input_ids: torch.Tensor,
     memory_ids: Optional[torch.Tensor],
     min_match_len: int,
@@ -502,6 +502,76 @@ def online_sam_address_meta_with_memory(
         row.extend(state.prefill(seq))
         out.append(row)
     return out
+
+
+def _sam_sequence_address_meta_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+) -> List[List[AddressMeta]]:
+    bsz, seqlen = input_ids.shape
+    special_ids = special_ids or set()
+    seqs = input_ids.detach().cpu().tolist()
+    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
+    out: List[List[AddressMeta]] = []
+
+    for b in range(bsz):
+        seq = seqs[b]
+        mem = _pad_filtered_mem(mems[b], pad_id)
+        combined = mem + seq
+        offset = len(mem)
+
+        preds, match_lens = sam_rosa_predict(combined, min_match_len=min_match_len)
+        sliced_preds = preds[offset:offset + seqlen]
+        sliced_match_lens = match_lens[offset:offset + seqlen]
+
+        row: List[AddressMeta] = []
+        for pred, raw_m in zip(sliced_preds, sliced_match_lens):
+            special_mask = pred >= 0 and forbid_special_target and pred in special_ids
+            row.append(
+                build_address_meta(
+                    pred,
+                    raw_m,
+                    min_match_len=min_match_len,
+                    special_mask=special_mask,
+                )
+            )
+        out.append(row)
+
+    return out
+
+
+def online_sam_address_meta_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+    implementation: str = "fast",
+) -> List[List[AddressMeta]]:
+    if implementation == "stateful":
+        return _stateful_online_sam_address_meta_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+    if implementation != "fast":
+        raise ValueError(f"未知 online_sam implementation: {implementation}")
+    return _sam_sequence_address_meta_with_memory(
+        input_ids=input_ids,
+        memory_ids=memory_ids,
+        min_match_len=min_match_len,
+        pad_id=pad_id,
+        special_ids=special_ids,
+        forbid_special_target=forbid_special_target,
+    )
 
 
 def naive_rosa_address_meta_with_memory(
@@ -647,36 +717,14 @@ def sam_rosa_address_meta_with_memory(
     special_ids: Optional[set] = None,
     forbid_special_target: bool = True,
 ) -> List[List[AddressMeta]]:
-    bsz, seqlen = input_ids.shape
-    special_ids = special_ids or set()
-    seqs = input_ids.detach().cpu().tolist()
-    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
-    out: List[List[AddressMeta]] = []
-
-    for b in range(bsz):
-        seq = seqs[b]
-        mem = _pad_filtered_mem(mems[b], pad_id)
-        combined = mem + seq
-        offset = len(mem)
-
-        preds, match_lens = sam_rosa_predict(combined, min_match_len=min_match_len)
-        sliced_preds = preds[offset:offset + seqlen]
-        sliced_match_lens = match_lens[offset:offset + seqlen]
-
-        row: List[AddressMeta] = []
-        for pred, raw_m in zip(sliced_preds, sliced_match_lens):
-            special_mask = pred >= 0 and forbid_special_target and pred in special_ids
-            row.append(
-                build_address_meta(
-                    pred,
-                    raw_m,
-                    min_match_len=min_match_len,
-                    special_mask=special_mask,
-                )
-            )
-        out.append(row)
-
-    return out
+    return _sam_sequence_address_meta_with_memory(
+        input_ids=input_ids,
+        memory_ids=memory_ids,
+        min_match_len=min_match_len,
+        pad_id=pad_id,
+        special_ids=special_ids,
+        forbid_special_target=forbid_special_target,
+    )
 
 
 def rosa_addressing_with_memory(
@@ -721,6 +769,7 @@ class RosaAddressEngine:
         pad_id: int,
         backend: str = "sam",
         sequence_mode: str = "reference_backend",
+        online_sam_impl: str = "fast",
         special_ids: Optional[set] = None,
         forbid_special_target: bool = True,
         source_type: str = "token_exact",
@@ -729,6 +778,7 @@ class RosaAddressEngine:
         self.pad_id = pad_id
         self.backend = backend
         self.sequence_mode = sequence_mode
+        self.online_sam_impl = online_sam_impl
         self.special_ids = set(special_ids or set())
         self.forbid_special_target = forbid_special_target
         self.source_type = source_type
@@ -793,6 +843,7 @@ class RosaAddressEngine:
                 pad_id=self.pad_id,
                 special_ids=self.special_ids,
                 forbid_special_target=self.forbid_special_target,
+                implementation=self.online_sam_impl,
             )
             batch = make_rosa_address_batch(
                 pack_address_meta_batch(batch_meta, device=input_ids.device),
