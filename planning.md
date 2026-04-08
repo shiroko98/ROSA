@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
-- 当前状态：已完成在线主线 `P1-3`、`P1-2`、`P1-4` 与 `P1-1`；真正的 suffix automaton state、统一 session 生命周期、prefetch/cache 主线和在线训练 V1 配方都已接入，下一步准备补统一训练/推理注入层 sweep 协议
+- 当前状态：已完成在线主线 `P1-3`、`P1-2`、`P1-4`、`P1-1` 与 `P1-5`；suffix automaton state、统一 session 生命周期、prefetch/cache 主线、在线训练 V1 配方和统一层位 sweep 协议都已接入
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -105,12 +105,21 @@
 - 已新增在线训练 V1 smoke 入口：
   - `outputs/p1_online_v1_smoke_qwen/comparison.json`
   - 当前小样本结果显示 ROSA test loss / token acc 相比 baseline 仍为正向
+- 已新增独立模块 `rosa_layer_sweep.py`，统一承载层位集合解析、训练小样本 sweep、profile sweep 与合并排序。
+- `scan_rosa_injection_layers.py` 现在只保留 CLI 包装，真正逻辑都收敛到 `rosa_layer_sweep.py`。
+- 当前统一 sweep 支持：
+  - `--experiment_mode profile`
+  - `--experiment_mode train`
+  - `--experiment_mode both`
+- 当前 train+profile smoke 入口：
+  - `outputs/scan_p1_train_profile_smoke/layer_scan_report.json`
+  - 每个层位组合会同时产出 `profile_report.json` 和 `train_summary.json`
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 补统一训练/推理注入层 sweep 协议。
-2. 用统一 sweep 报告验证训练层位与 profile 层位的可复现性。
+1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
+2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
 
 ## 自我验证清单
 

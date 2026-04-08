@@ -166,11 +166,19 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 ## Injection Layer Scan
 
 - 显式层位：`--rosa_inject_layer_ids`
-- 扫描脚本：`scan_rosa_injection_layers.py`
+- 统一扫描模块：`rosa_layer_sweep.py`
+- CLI 入口：`scan_rosa_injection_layers.py`
+- 统一实验模式：`--experiment_mode profile|train|both`
 - 典型用途：
   - 单层扫描：`--scan_mode single`
   - 双层扫描：`--scan_mode pair`
-- 输出文件：`<out_dir>/layer_scan_report.json`
+- 输出文件：
+  - 合并报告：`<out_dir>/layer_scan_report.json`
+  - 单层位 profile 报告：`<out_dir>/layers_*/profile/profile_report.json`
+  - 单层位训练报告：`<out_dir>/layers_*/train/train_summary.json`
+- 当前推荐做法：
+  - 只看推理侧层位：`--experiment_mode profile`
+  - 同时对齐训练/推理层位：`--experiment_mode both --rosa_recipe online_v1`
 
 ## Profiling 基线
 
@@ -198,6 +206,7 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 - `ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)`：快速看 prefetch/staging 统计是否正常。
 - `ROSA v2 - Online Baseline Profile (P1 Hot Cache Smoke)`：快速看热点缓存的命中率与 tail latency。
 - `ROSA v2 - Injection Layer Scan (Smoke)`：快速扫描不同注入层位。
+- `ROSA v2 - Injection Layer Sweep (Train+Profile Smoke)`：同一层位组合同时跑训练小样本与 profile。
 
 ## 当前开发约定
 
