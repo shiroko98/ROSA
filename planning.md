@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
-- 当前状态：已完成在线主线 `P1-3`；真正的 suffix automaton state 已接入独立模块，下一步准备统一 prefill/decode session 生命周期
+- 当前状态：已完成在线主线 `P1-3` 与 `P1-2`；真正的 suffix automaton state 和统一 session 生命周期都已接入，下一步准备把 prefetch/staging/hot cache 挂到同一条主线
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -76,14 +76,23 @@
   - `forward_seq()` 与 reference backend 地址结果逐位置一致
   - `forward_step()` 与 `forward_seq()` 在 memory prefill 后保持一致
   - `logit diff = 0.0`
+- 已新增独立模块 `rosa_session.py`，提供：
+  - `RosaBatchSession.prefill_seq()`
+  - `RosaBatchSession.decode_step()`
+  - `RosaBatchSession.snapshot()`
+  - `RosaBatchSession.reset()`
+- `RosaFusedLM` 已支持 `init_online_session(batch_size)`，profiling 的 online prefill/decode 路径现在复用同一 session API。
+- session 回归已验证：
+  - `prefill_seq()` 与旧 `forward_online()` 数值一致
+  - `prefill + decode_step()` 与 memory reference 路径对齐
+  - snapshot 能稳定反映 token 计数与状态生命周期
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 实现统一推理 session，让 `prefill + decode` 共用更正式的 `RosaState` 生命周期。
-2. 在新 session 上接通 prefetch / staging / hot cache 主线。
-3. 固化在线训练 V1 配方与小样本实验入口。
-4. 最后补统一训练/推理注入层 sweep 协议。
+1. 在新 session 上接通 prefetch / staging / hot cache 主线。
+2. 固化在线训练 V1 配方与小样本实验入口。
+3. 最后补统一训练/推理注入层 sweep 协议。
 
 ## 自我验证清单
 

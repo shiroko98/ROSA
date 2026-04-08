@@ -435,6 +435,13 @@ def run_prefill_profile(
         empty_mem = torch.empty((input_ids.size(0), 0), dtype=torch.long, device=device)
         token_count = int(input_ids.numel())
 
+        def run_online_prefill():
+            session = rosa_model.init_online_session(input_ids.size(0))
+            try:
+                return session.prefill_seq(input_ids)
+            finally:
+                session.close()
+
         _, base_times = bench_callable(
             lambda: baseline(input_ids=input_ids),
             warmup_iters=warmup_iters,
@@ -448,10 +455,7 @@ def run_prefill_profile(
             device=device,
         )
         online_out, on_times = bench_callable(
-            lambda: rosa_model.forward_online(
-                input_ids=input_ids,
-                rosa_online_state=rosa_model.init_online_state(input_ids.size(0)),
-            ),
+            run_online_prefill,
             warmup_iters=warmup_iters,
             measure_iters=measure_iters,
             device=device,
@@ -466,8 +470,9 @@ def run_prefill_profile(
             forbid_special_target=rosa_model.forbid_special_target,
             backend=rosa_model.rosa_backend,
         )
-        online_state = rosa_model.init_online_state(input_ids.size(0))
-        online_address = online_state.address_tokens(input_ids, pad_id=pad_id, device=device)
+        online_session = rosa_model.init_online_session(input_ids.size(0))
+        online_session.prefill_seq(input_ids)
+        online_address = address_batch_to_dict(online_session.last_payload.address)
 
         baseline_times.extend(base_times)
         reference_times.extend(ref_times)
@@ -561,19 +566,16 @@ def run_decode_micro_profile(
         return last, all_address
 
     def run_online_decode(prefill_rows, decode_rows):
-        state = rosa_model.init_online_state(len(prefill_rows))
-        address_state = rosa_model.init_online_state(len(prefill_rows))
-        prefill_tensor = torch.tensor(prefill_rows, dtype=torch.long)
-        state.prefill(prefill_tensor, pad_id=pad_id)
-        address_state.prefill(prefill_tensor, pad_id=pad_id)
+        session = rosa_model.init_online_session(len(prefill_rows))
+        prefill_tensor = torch.tensor(prefill_rows, dtype=torch.long, device=device)
+        session.prefill_seq(prefill_tensor)
         last = None
         all_address = []
         for step_idx in range(len(decode_rows[0])):
             step_values = [[row[step_idx]] for row in decode_rows]
             step_ids = torch.tensor(step_values, dtype=torch.long, device=device)
-            addressed = address_state.address_tokens(step_ids, pad_id=pad_id, device=device)
-            last = rosa_model.forward_online(input_ids=step_ids, rosa_online_state=state)
-            all_address.append(addressed)
+            last = session.decode_step(step_ids)
+            all_address.append(session.last_payload.address)
         return last, all_address
 
     def run_prefetched_decode(prefill_rows, decode_rows):

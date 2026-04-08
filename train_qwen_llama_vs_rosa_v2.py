@@ -35,6 +35,7 @@ from rosa_addressing import (
     sam_rosa_predict,
 )
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
+from rosa_session import RosaBatchSession
 
 try:
     from transformers import AutoTokenizer
@@ -1183,6 +1184,9 @@ class RosaFusedLM(BaseLM):
 
     def init_online_state(self, batch_size: int) -> OnlineRosaBatchState:
         return self.address_engine.init_state(batch_size)
+
+    def init_online_session(self, batch_size: int) -> RosaBatchSession:
+        return RosaBatchSession(self, batch_size)
 
     def init_prefetcher(
         self,

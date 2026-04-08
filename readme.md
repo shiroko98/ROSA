@@ -6,6 +6,7 @@
 - 主训练脚本：`train_qwen_llama_vs_rosa_v2.py`
 - 主测试入口：`tests/test_train_qwen_llama_vs_rosa_v2.py`
 - 地址/状态模块：`rosa_addressing.py`
+- 在线 session 模块：`rosa_session.py`
 
 ## 常用命令
 
@@ -23,8 +24,14 @@ git log --oneline -5
 
 - 入口能力：
   - `RosaFusedLM.init_online_state(batch_size)`
+  - `RosaFusedLM.init_online_session(batch_size)`
   - `OnlineRosaBatchState.prefill(token_ids, pad_id=...)`
   - `RosaFusedLM.forward_online(input_ids, rosa_online_state=...)`
+- 当前更推荐的统一生命周期接口：
+  - `session = model.init_online_session(batch_size)`
+  - `session.prefill_seq(prompt_ids)`
+  - `session.decode_step(step_ids)`
+  - `session.snapshot()`
 - 当前版本仍使用共享 `embed_tokens` 作为 value，适合先验证在线路径与语义一致性。
 
 ## Per-Layer Value Store
