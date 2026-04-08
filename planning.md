@@ -13,6 +13,7 @@
 - 当前策略调整：训练地址缓存不再作为默认主路径，后续以“异步地址支路 + 高性能 SAM sequence 实现”为优先优化方向
 - 当前进展：训练地址异步预取已落地，可在不持久缓存整数据集的前提下，把 `online_seq` 地址准备与 GPU 主干训练做 overlap
 - 当前进展：`online_sam` 的 sequence 快路径已落地，默认可通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`；`stateful` 保留为逐 token 回归实现
+- 当前进展：`online_v2` 配方已落地，把 `per_layer ValueStore` 正式接入在线训练主线实验入口，训练 / profile / sweep 现在都能直接通过 recipe 复用这组配置
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -138,6 +139,17 @@
   - `rosa_addr ~40.41ms -> ~39.56ms`
   - `step ~51.38ms -> ~50.60ms`
   - 端到端收益较温和，但训练指标与地址输出保持一致
+- 已新增 `online_v2` 配方：
+  - `online_seq`
+  - `online_sam`
+  - `per_layer value`
+  - `context gate`
+  - 单早层注入
+- profiling 入口现已支持 `--rosa_recipe online_v2`
+- 小型 MiniPile 实验（`32/8/8 docs`, `fast + async`）当前结果：
+  - `online_v1`：`test loss 16.5346`，`token_acc 0.04419`，`step ~35.50ms`
+  - `online_v2`：`test loss 16.5328`，`token_acc 0.04602`，`step ~74.60ms`
+  - 说明 `per_layer` 在这次小实验上带来轻微效果增益，但参数量和训练开销明显上升，后续仍需更系统评估
 
 ## 下一任务
 

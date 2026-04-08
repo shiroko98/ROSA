@@ -33,8 +33,8 @@
 ## 当前统计
 
 - `已完成`：10 项
-- `进行中`：2 项
-- `未开始`：9 项
+- `进行中`：3 项
+- `未开始`：8 项
 
 ## 性能优化待办补充
 
@@ -84,7 +84,7 @@
 | 已完成 | P1 | 让 prefetch / staging / hot cache 服务于新主线 | 在线推理流水线优化版 | decode 中能观测到稳定的 prefetch hit / cache hit，并且不破坏语义 | 当前 value backend 过轻，优化收益不容易显现 | 保留 stats 优先；先做正确性与稳定性，再评估真实收益 |
 | 已完成 | P1 | 训练/推理统一注入层搜索协议 | 一套可复用的层位实验配置 | 训练和 profile 都支持 `inject_layer_ids`，结论可复现 | 训练期最好层位与推理期最好层位未必一致 | 扩展扫描脚本，增加训练小样本 sweep 与 profile 对齐报告 |
 | 未开始 | P2 | 接入外部文档 memory（ROSA-DocMemory） | 类 RAG 的 ROSA 文档参考路径 | 推理时可将检索到的文档作为 `optional_memory` 注入 `RosaState`；prefill/decode 可稳定使用 | 文档排序、截断和 memory 污染会影响命中质量 | 先支持 `retrieved_docs -> token stream memory`；再考虑 bookmark / anchor / compression |
-| 未开始 | P2 | 训练 V2：per-layer ValueStore 正式接入在线训练主线 | 在线训练版大 ValueStore | `per_layer` 成为在线训练默认实验对象之一 | 参数量和显存/主存成本上升 | 将 `per_layer` 从“功能可用”推进到“主线训练可复现” |
+| 进行中（已完成 online_v2 recipe） | P2 | 训练 V2：per-layer ValueStore 正式接入在线训练主线 | 在线训练版大 ValueStore | `per_layer` 成为在线训练默认实验对象之一 | 参数量和显存/主存成本上升 | 将 `per_layer` 从“功能可用”推进到“主线训练可复现” |
 | 未开始 | P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
 | 未开始 | P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
 | 未开始 | P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |

@@ -74,6 +74,62 @@ class ProfileRosaOnlineBaselineSmokeTests(unittest.TestCase):
             self.assertTrue(report["hot_cache"]["enabled"])
             self.assertGreater(report["hot_cache"]["prefill"]["token_requests"], 0.0)
 
+    def test_profile_accepts_online_v2_recipe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parser = profile_mod.build_arg_parser()
+            args = parser.parse_args(
+                [
+                    "--data_path",
+                    "data/rosa_demo.txt",
+                    "--rosa_recipe",
+                    "online_v2",
+                    "--data_format",
+                    "text",
+                    "--split_mode",
+                    "line",
+                    "--max_docs",
+                    "4",
+                    "--num_samples",
+                    "2",
+                    "--prefill_tokens",
+                    "8",
+                    "--decode_steps",
+                    "2",
+                    "--sample_stride",
+                    "2",
+                    "--batch_size",
+                    "1",
+                    "--warmup_iters",
+                    "0",
+                    "--measure_iters",
+                    "1",
+                    "--device",
+                    "cpu",
+                    "--arch_style",
+                    "qwen",
+                    "--seq_len",
+                    "8",
+                    "--dim",
+                    "16",
+                    "--n_layers",
+                    "2",
+                    "--n_heads",
+                    "4",
+                    "--n_kv_heads",
+                    "4",
+                    "--intermediate_size",
+                    "32",
+                    "--out_dir",
+                    tmpdir,
+                ]
+            )
+
+            report = profile_mod.run_profile(args)
+
+            self.assertEqual(report["meta"]["recipe"]["name"], "online_v2")
+            self.assertEqual(report["meta"]["rosa_value_mode"], "per_layer")
+            self.assertTrue(report["meta"]["recipe"]["applied"])
+
 
 if __name__ == "__main__":
     unittest.main()

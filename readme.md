@@ -100,7 +100,7 @@ git log --oneline -5
 ## Recipe / Preset
 
 - 配置模块：`rosa_recipes.py`
-- 开关：`--rosa_recipe custom|online_v1`
+- 开关：`--rosa_recipe custom|online_v1|online_v2`
 - 当前推荐主线：`--rosa_recipe online_v1`
 - `online_v1` 会固定：
   - `--rosa_train_mode online_seq`
@@ -113,7 +113,19 @@ git log --oneline -5
   - `--rosa_inject_layer_ids 0`
   - `--rosa_min_match_len 1`
   - `--rosa_scale 0.15`
+- `online_v2` 会固定：
+  - `--rosa_train_mode online_seq`
+  - `--rosa_memory_mode doc_local`
+  - `--rosa_backend sam`
+  - `--rosa_seq_address_mode online_sam`
+  - `--rosa_value_mode per_layer`
+  - `--rosa_context_gate`
+  - `--rosa_inject_layers 1`
+  - `--rosa_inject_layer_ids 0`
+  - `--rosa_min_match_len 1`
+  - `--rosa_scale 0.15`
 - `online_v1` 当前默认仍走在线主线语义，不会自动启用训练地址缓存
+- `online_v2` 当前更适合作为“进阶实验 recipe”，用于验证 per-layer ValueStore 是否值得正式进入主线
 - 典型 smoke：
 
 ```powershell
@@ -243,6 +255,10 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `stateful`: `rosa_addr ~40.41ms`，`step ~51.38ms`
   - `fast`: `rosa_addr ~39.56ms`，`step ~50.60ms`
   - 说明在真实训练闭环里，`fast` 已经是更好的默认 sequence 实现，但端到端收益会被主干/反传与 CUDA 同步噪声部分稀释
+- 当前一次 MiniPile 小实验（`32/8/8 docs`, `fast + async`）：
+  - `online_v1`: `test loss 16.5346`，`token_acc 0.04419`，`step ~35.50ms`
+  - `online_v2`: `test loss 16.5328`，`token_acc 0.04602`，`step ~74.60ms`
+  - 说明 per-layer ValueStore 有轻微效果增益，但当前训练成本上升明显
 
 ## VS Code Launch
 

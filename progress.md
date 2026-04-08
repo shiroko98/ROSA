@@ -31,6 +31,7 @@
 - [x] 在线主线 P1-5: 训练/推理统一注入层搜索协议
 - [x] 训练阶段 timing 监控与慢点定位
 - [x] 在线主线 P2: `online_sam` sequence 快路径
+- [x] 在线主线 P2: `online_v2` per-layer recipe 主线化
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -175,6 +176,18 @@
   - `stateful`：逐 token `SuffixAutomatonRosaState.update_one()` 回归路径
 - `RosaAddressEngine.forward_seq()` 默认走 `fast`；`forward_step()` / session decode 继续保留真实在线 stateful 生命周期
 - 训练地址缓存构建路径也已对齐到 `online_sam_impl`，避免缓存与主线 sequence 实现再次分叉
+- 新增 `online_v2` 配方：
+  - `online_seq`
+  - `online_sam`
+  - `per_layer value`
+  - `context gate`
+  - 单早层注入
+- `profile_rosa_online_baseline.py` 现已支持 `--rosa_recipe`
+- `online_v2` 因此可在：
+  - 训练主脚本
+  - profile
+  - layer sweep
+ 这三条入口上直接复用
 
 ## 自我验证记录
 
@@ -207,6 +220,8 @@
 - `train_qwen_llama_vs_rosa_v2.py ... --disable_rosa_train_address_async --rosa_online_sam_impl stateful --train_timing`
 - `train_qwen_llama_vs_rosa_v2.py ... --disable_rosa_train_address_async --rosa_online_sam_impl fast --train_timing`
 - `D:\\anaconda\\envs\\model\\python.exe -c \"...online_sam_address_meta_with_memory(... implementation='stateful'/'fast')...\"`（纯地址 microbenchmark）
+- `conda run -n model python -m unittest tests.test_rosa_recipes tests.test_profile_rosa_online_baseline tests.test_scan_rosa_injection_layers`
+- `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v2 --rosa_online_sam_impl fast --train_timing`
 - 结果：本次改动相关的 targeted tests 已通过，`profile` smoke 也已通过；`unittest discover -s tests` 在当前 Windows 环境下仍会遇到独立的 tempfile 权限噪声，需要与本次代码逻辑问题区分看待。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
@@ -284,6 +299,11 @@
     - `rosa_addr ~40.41ms -> ~39.56ms`
     - `step ~51.38ms -> ~50.60ms`
     - 端到端收益较温和，说明当前更大的训练收益仍来自 async overlap；但 `fast` 已经成为更合适的默认 sequence 实现
+- online_v2 结论：
+  - 当前 `32/8/8 docs` 的 MiniPile 小实验里：
+    - `online_v1`: `test loss 16.5346`，`token_acc 0.04419`，`step ~35.50ms`
+    - `online_v2`: `test loss 16.5328`，`token_acc 0.04602`，`step ~74.60ms`
+  - 说明 `per_layer` 在当前小实验上带来轻微效果增益，但训练成本明显更高；因此现在更适合把它标成“在线主线已接入、待进一步评估”，而不是直接替代 `online_v1`
 
 ## 备注
 

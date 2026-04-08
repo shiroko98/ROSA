@@ -37,6 +37,21 @@ ROSA_RECIPES: Dict[str, RosaRecipeSpec] = {
         min_match_len=1,
         scale=0.15,
     ),
+    "online_v2": RosaRecipeSpec(
+        name="online_v2",
+        description="在线主线 V2：online_seq + online_sam + per-layer value + 单早层 + context gate。",
+        train_mode="online_seq",
+        memory_mode="doc_local",
+        backend="sam",
+        seq_address_mode="online_sam",
+        value_mode="per_layer",
+        context_gate=True,
+        use_match_len_gate=True,
+        inject_layers=1,
+        inject_layer_ids="0",
+        min_match_len=1,
+        scale=0.15,
+    ),
 }
 
 

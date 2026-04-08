@@ -15,6 +15,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="为 ROSA online/reference 路径建立性能与正确性基线。"
     )
     parser.add_argument("--data_path", type=str, required=True, help="用于 profiling 的数据路径。")
+    parser.add_argument("--rosa_recipe", type=str, default="custom", choices=rosa_mod.available_rosa_recipe_names())
     parser.add_argument("--tokenizer_name_or_path", type=str, default=None)
     parser.add_argument("--split_mode", type=str, default="paragraph", choices=["paragraph", "line", "stream"])
     parser.add_argument("--data_format", type=str, default="auto", choices=["auto", "text", "jsonl", "json"])
@@ -915,7 +916,9 @@ def print_summary(report: Dict[str, Any]) -> None:
 
 
 def run_profile(args) -> Dict[str, Any]:
+    recipe_meta = rosa_mod.apply_rosa_recipe(args)
     report = build_report(args)
+    report["meta"]["recipe"] = recipe_meta
     report["meta"]["out_dir"] = str(Path(args.out_dir).resolve())
     save_json(report, Path(args.out_dir) / "profile_report.json")
     print_summary(report)

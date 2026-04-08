@@ -152,6 +152,68 @@ class RosaInjectionLayerScanSmokeTests(unittest.TestCase):
             self.assertIn("profile", summary["best"])
             self.assertGreaterEqual(summary["best"]["train"]["test_address_source_online_seq"], 1.0)
 
+    def test_run_scan_train_mode_accepts_online_v2_recipe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parser = scan_mod.build_arg_parser()
+            args = parser.parse_args(
+                [
+                    "--data_path",
+                    "data/rosa_demo.txt",
+                    "--train_data_path",
+                    "data/rosa_demo.txt",
+                    "--val_data_path",
+                    "data/rosa_demo.txt",
+                    "--test_data_path",
+                    "data/rosa_demo.txt",
+                    "--data_format",
+                    "text",
+                    "--split_mode",
+                    "line",
+                    "--max_train_docs",
+                    "4",
+                    "--max_val_docs",
+                    "4",
+                    "--max_test_docs",
+                    "4",
+                    "--batch_size",
+                    "1",
+                    "--epochs",
+                    "1",
+                    "--device",
+                    "cpu",
+                    "--arch_style",
+                    "qwen",
+                    "--seq_len",
+                    "8",
+                    "--dim",
+                    "16",
+                    "--n_layers",
+                    "2",
+                    "--n_heads",
+                    "4",
+                    "--n_kv_heads",
+                    "4",
+                    "--intermediate_size",
+                    "32",
+                    "--rosa_recipe",
+                    "online_v2",
+                    "--experiment_mode",
+                    "train",
+                    "--scan_mode",
+                    "single",
+                    "--layer_candidates",
+                    "0",
+                    "--out_dir",
+                    tmpdir,
+                ]
+            )
+
+            summary = scan_mod.run_scan(args)
+
+            self.assertEqual(summary["meta"]["recipe"]["name"], "online_v2")
+            self.assertIn("train", summary["best"])
+            self.assertGreater(summary["best"]["train"]["param_count"], 9890)
+
 
 if __name__ == "__main__":
     unittest.main()
