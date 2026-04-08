@@ -34,6 +34,7 @@ from rosa_addressing import (
     sam_rosa_address_meta_with_memory,
     sam_rosa_predict,
 )
+from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 from rosa_session import RosaBatchSession
 
@@ -1758,7 +1759,7 @@ def build_model_config(args, tokenizer) -> ModelConfig:
     )
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="训练标准 Qwen/LLaMA 风格基线模型 与 Emb(ROSA(x)) 融合模型（文档前文 memory 版）进行对比。")
     parser.add_argument("--data_path", type=str, default=None,
                         help="单一数据源路径，可为文件、目录或通配符。未显式提供 train/val/test 时使用随机切分。")
@@ -1796,6 +1797,9 @@ def main():
     parser.add_argument("--rosa_train_mode", type=str, default="online_seq",
                         choices=["online_seq", "reference_precompute"],
                         help="online_seq 为新的在线训练主线；reference_precompute 保留旧的 doc-local SAM 预计算回归路径。")
+    parser.add_argument("--rosa_recipe", type=str, default="custom",
+                        choices=available_rosa_recipe_names(),
+                        help="应用一个 ROSA 预设配方。online_v1 会固定 shared value、online_sam、单早层与 context gate。")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -1829,7 +1833,13 @@ def main():
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true",
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
     parser.add_argument("--out_dir", type=str, default="outputs/rosa_compare")
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
+    recipe_meta = apply_rosa_recipe(args)
 
     os.makedirs(args.out_dir, exist_ok=True)
     set_seed(args.seed)
@@ -1898,11 +1908,14 @@ def main():
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
     print(f"ROSA train mode: {args.rosa_train_mode}")
+    print(f"ROSA recipe: {recipe_meta['name']}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
     print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
+    if recipe_meta["applied"]:
+        print(f"ROSA recipe detail: {recipe_meta['description']}")
     print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
 
     train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
@@ -2030,6 +2043,7 @@ def main():
             "eos_token_id": tokenizer.eos_token_id,
         },
         "rosa": {
+            "recipe": recipe_meta,
             "backend": args.rosa_backend,
             "train_mode": args.rosa_train_mode,
             "effective_train_mode": memory_meta["effective_train_mode"],

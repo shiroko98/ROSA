@@ -87,6 +87,54 @@ git log --oneline -5
     - `rosa_address_source_online_step`
   - 当前 `OnlineRosaState` 已切到真正的在线 SAM 状态；旧 list-state 以 `ExactMatchRosaState` 保留作 fallback/reference
 
+## Recipe / Preset
+
+- 配置模块：`rosa_recipes.py`
+- 开关：`--rosa_recipe custom|online_v1`
+- 当前推荐主线：`--rosa_recipe online_v1`
+- `online_v1` 会固定：
+  - `--rosa_train_mode online_seq`
+  - `--rosa_memory_mode doc_local`
+  - `--rosa_backend sam`
+  - `--rosa_seq_address_mode online_sam`
+  - `--rosa_value_mode shared`
+  - `--rosa_context_gate`
+  - `--rosa_inject_layers 1`
+  - `--rosa_inject_layer_ids 0`
+  - `--rosa_min_match_len 1`
+  - `--rosa_scale 0.15`
+- 典型 smoke：
+
+```powershell
+conda run -n model python train_qwen_llama_vs_rosa_v2.py `
+  --train_data_path data/minipile/train-00000-of-00012-6fbcb5acda05b3c0.jsonl `
+  --val_data_path data/minipile/validation-00000-of-00001-a2192e61a091cecb.jsonl `
+  --test_data_path data/minipile/test-00000-of-00001-010a6231c4b54d31.jsonl `
+  --data_format jsonl `
+  --json_text_keys text `
+  --max_train_docs 24 `
+  --max_val_docs 8 `
+  --max_test_docs 8 `
+  --tokenizer_name_or_path D:/codes/Qwen3.5-0.8B `
+  --arch_style qwen `
+  --seed 42 `
+  --seq_len 64 `
+  --stride 64 `
+  --batch_size 2 `
+  --epochs 1 `
+  --lr 3e-4 `
+  --weight_decay 0.01 `
+  --grad_clip 1.0 `
+  --dim 64 `
+  --n_layers 2 `
+  --n_heads 4 `
+  --n_kv_heads 4 `
+  --intermediate_size 128 `
+  --dropout 0.0 `
+  --rosa_recipe online_v1 `
+  --out_dir outputs/p1_online_v1_smoke_qwen
+```
+
 ## Prefetch / Staging
 
 - 入口能力：
@@ -145,6 +193,7 @@ git log --oneline -5
 - `ROSA v2 - Online Baseline Profile (Smoke)`：快速验证脚本链路。
 - `ROSA v2 - Online Baseline Profile (Qwen ckpt compare)`：用现有 Qwen checkpoint 直接比较 reference vs online。
 - `ROSA v2 - P1 Value+Gate Smoke (Qwen)`：直接训练一版 `per_layer + context_gate` 小实验。
+- `ROSA v2 - Online V1 Smoke (Qwen)`：在线主线 V1 配方的小样本训练入口。
 - `ROSA v2 - Online Baseline Profile (P1 Value+Gate Smoke)`：快速看 P1 组合路径是否跑通。
 - `ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)`：快速看 prefetch/staging 统计是否正常。
 - `ROSA v2 - Online Baseline Profile (P1 Hot Cache Smoke)`：快速看热点缓存的命中率与 tail latency。
