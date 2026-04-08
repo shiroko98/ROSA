@@ -535,7 +535,7 @@ class RosaOnlineTrainingForwardTests(unittest.TestCase):
         self.assertIsNotNone(model.embed_tokens.weight.grad)
         self.assertGreater(model.embed_tokens.weight.grad.abs().sum().item(), 0.0)
 
-    def test_train_one_model_runs_on_online_seq_dataset_with_cached_addresses(self):
+    def test_train_one_model_runs_on_online_seq_dataset_without_precomputed_features(self):
         docs = [
             [1, 2, 1, 2, 3, 4],
             [5, 6, 5, 6, 7, 8],
@@ -560,7 +560,7 @@ class RosaOnlineTrainingForwardTests(unittest.TestCase):
         )
         self.assertEqual(meta["effective_train_mode"], "online_seq")
         self.assertFalse(meta["precomputed_doc_local_sam"])
-        self.assertTrue(meta["cached_online_seq_addresses"])
+        self.assertFalse(meta["cached_online_seq_addresses"])
 
         train_loader, val_loader, _ = rosa_mod.build_dataloaders(
             train_ds,
@@ -795,7 +795,7 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         self.assertEqual(meta["global_train_memory_tokens"], 3)
         self.assertEqual(meta["train_global_memory_size"], 3)
         self.assertTrue(meta["uses_full_doc_memory"])
-        self.assertTrue(meta["cached_online_seq_addresses"])
+        self.assertFalse(meta["cached_online_seq_addresses"])
 
         first_train = train_ds[0]
         second_train = train_ds[1]
@@ -803,13 +803,12 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         first_val = val_ds[0]
 
         self.assertEqual(first_train["rosa_memory_ids"].tolist(), [])
-        self.assertEqual(second_train["rosa_memory_ids"].tolist(), [])
-        self.assertEqual(third_train["rosa_memory_ids"].tolist(), [])
-        self.assertEqual(first_val["rosa_memory_ids"].tolist(), [])
-        self.assertEqual(first_train["rosa_precomputed_source"], "seq:online_exact:cached")
+        self.assertEqual(second_train["rosa_memory_ids"].tolist(), [10, 11])
+        self.assertEqual(third_train["rosa_memory_ids"].tolist(), [11, 12, 13])
+        self.assertEqual(first_val["rosa_memory_ids"].tolist(), [21, 22, 23])
         self.assertEqual(len(test_ds), len(val_ds))
 
-    def test_doc_local_online_seq_uses_cached_full_doc_prefix_addresses(self):
+    def test_doc_local_online_seq_uses_full_doc_prefix_without_precomputed_fields(self):
         docs = [[1, 2, 3, 4, 5]]
         train_ds, val_ds, test_ds, meta = rosa_mod.build_chunk_datasets(
             docs,
@@ -832,16 +831,15 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         self.assertEqual(meta["requested_train_mode"], "online_seq")
         self.assertEqual(meta["effective_train_mode"], "online_seq")
         self.assertFalse(meta["precomputed_doc_local_sam"])
-        self.assertTrue(meta["cached_online_seq_addresses"])
+        self.assertFalse(meta["cached_online_seq_addresses"])
         self.assertTrue(meta["uses_full_doc_memory"])
-        self.assertEqual(meta["effective_history"], "full_doc_prefix_online_seq_cached")
+        self.assertEqual(meta["effective_history"], "full_doc_prefix_online_seq")
 
         third = train_ds[2]
-        self.assertEqual(third["rosa_memory_ids"].tolist(), [])
-        self.assertIn("rosa_precomputed_ids", third)
-        self.assertIn("rosa_precomputed_match_lens", third)
-        self.assertIn("rosa_precomputed_raw_best_lens", third)
-        self.assertEqual(third["rosa_precomputed_source"], "seq:online_sam:cached")
+        self.assertEqual(third["rosa_memory_ids"].tolist(), [1, 2])
+        self.assertNotIn("rosa_precomputed_ids", third)
+        self.assertNotIn("rosa_precomputed_match_lens", third)
+        self.assertNotIn("rosa_precomputed_raw_best_lens", third)
         self.assertEqual(len(val_ds), len(test_ds))
 
     def test_doc_local_online_seq_cached_addresses_match_direct_online_sam(self):
@@ -862,6 +860,7 @@ class GlobalTrainMemoryTests(unittest.TestCase):
             rosa_min_match_len=2,
             special_ids=set(),
             forbid_special_target=True,
+            enable_train_address_cache=True,
         )
 
         self.assertTrue(meta["cached_online_seq_addresses"])
@@ -923,6 +922,29 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         )
         self.assertEqual(out["rosa_address_source_online_seq"], 1.0)
         self.assertEqual(out["rosa_address_source_precomputed"], 0.0)
+
+    def test_doc_local_online_seq_can_enable_cached_addresses(self):
+        docs = [[1, 2, 3, 4, 5]]
+        train_ds, _, _, meta = rosa_mod.build_chunk_datasets(
+            docs,
+            docs,
+            docs,
+            seq_len=2,
+            pad_id=0,
+            stride=1,
+            rosa_memory_tokens=1,
+            rosa_memory_mode="doc_local",
+            rosa_global_memory_tokens=0,
+            rosa_backend="sam",
+            rosa_train_mode="online_seq",
+            rosa_seq_address_mode="online_sam",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+            enable_train_address_cache=True,
+        )
+        self.assertTrue(meta["cached_online_seq_addresses"])
+        self.assertIn("rosa_precomputed_ids", train_ds[2])
 
     def test_doc_local_sam_builds_precomputed_chunk_features_in_reference_mode(self):
         docs = [[1, 2, 1, 2, 3]]

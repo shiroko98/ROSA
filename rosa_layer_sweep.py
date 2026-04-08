@@ -170,7 +170,10 @@ def build_training_context(args) -> SweepTrainingContext:
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
-        enable_train_address_cache=not getattr(args, "disable_rosa_train_address_cache", False),
+        enable_train_address_cache=(
+            getattr(args, "enable_rosa_train_address_cache", False)
+            and not getattr(args, "disable_rosa_train_address_cache", False)
+        ),
     )
     return SweepTrainingContext(
         tokenizer=tokenizer,

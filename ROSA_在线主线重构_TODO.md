@@ -36,7 +36,10 @@
 | P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
 | P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
 | P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |
+| P2 | 在线 SAM sequence 路径下沉到高性能实现 | 比 `SuffixAutomatonRosaState.update_one()` 更快的训练期 sequence 地址引擎 | 训练期 `online_seq + online_sam` 不再主要耗时在 Python 逐 token 状态推进；与现有 step/session 语义保持一致 | 若训练 sequence 路径与推理 step 路径语义漂移，会破坏一致性 | 保留 step/session 的真实在线 SAM；单独为 `forward_seq()` 实现 array-backed / fused SAM sequence 版本，并做逐位置一致性回归 |
 | P2 | 训练期地址支路异步化 / overlap | 不改变 `online_seq` 语义的训练加速方案 | 训练 step 中地址生成不再完全阻塞主干；能比较同步 / worker 前移 / next-batch overlap 三种模式 | 若重新退化成离线持久 precompute，会削弱在线主线的一致性 | 保持 `AddressEngine.forward_seq()` 为主线定义；优先尝试 CPU worker 临时预取本 step address，再尝试与 GPU 主干重叠计算 next batch address |
+| P2 | 训练期 memory 范围控制与 bookmark/window 实验 | 不依赖 full doc prefix 的轻量在线训练配置 | 在较短 memory window 下维持大部分收益，同时显著降低地址构建规模 | window 过短会伤害匹配覆盖率 | 先支持固定 tail window，再实验 bookmark / anchor / canonicalization，比较 coverage / speed / loss |
+| P2 | 文档级状态快照与 chunk 起点增量恢复 | 比“整文档地址全缓存”更省内存的训练执行模式 | 大数据集下无需为每个 sample 复制 `rosa_precomputed_*`，可通过起点快照 + 短 replay 恢复在线状态 | snapshot/restore 的正确性和 clone 成本需要严格验证 | 先做 chunk 起点 `RosaStateSnapshot` 缓存，再尝试“每 K token 一个 snapshot + 局部 replay”的折中方案 |
 | P2 | ROSA × Engram 融合路线 | 文档 memory 与参数化 memory 共存的 hybrid 方案 | 同时支持 `external doc memory` 与 `learned memory table` 两条 value 分支，并可由 gate 融合 | 两类 memory 的优先级与冲突处理复杂 | 先实现 `doc memory branch + learned branch` 的双分支 payload；再研究共享 gate / branch-specific gate |
 | P3 | 服务化 request 生命周期与混批 | 面向 serving 的 ROSA 运行时 | `RosaState`、prefetch、cache、bookmark 在并发请求下生命周期稳定 | 与现有推理框架集成难度高 | 先设计 request API、状态快照、回收与 fallback 策略 |
 
@@ -62,6 +65,8 @@
 3. compression / memory value / sparse gather 逐步接入
 4. prefetch / cache 在重 value backend 下体现真实收益
 5. 训练阶段探索地址支路 worker 前移 / overlap，减少 `online_sam` 串行地址生成对 step time 的阻塞
+6. 训练 sequence 路径切到高性能 SAM 实现，并逐步摆脱 `full doc prefix`
+7. 用状态快照 / chunk 起点恢复替代“整文档地址全缓存”
 
 ### 里程碑 D：Hybrid Memory
 

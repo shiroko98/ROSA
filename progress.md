@@ -157,7 +157,8 @@
   - 对 `online_seq + online_exact/online_sam`
   - 在数据集构建期预先缓存整文档 sequence 地址
   - 训练前向复用缓存，不再每个 chunk 重放整段 `full doc prefix`
-- 新增开关：`--disable_rosa_train_address_cache`
+- 新增开关：`--enable_rosa_train_address_cache`
+- 当前默认：训练地址缓存已关闭，在线主线重新回到逐 batch 在线构建；缓存仅作为可选对照/应急开关保留
 - `profile_rosa_online_baseline.py` 与 `rosa_layer_sweep.py` 已同步支持该开关，并兼容 cached online_seq 数据集
 
 ## 自我验证记录
@@ -233,6 +234,11 @@
   - `训练期地址支路异步化 / overlap`：在不回退到旧离线持久 precompute 的前提下，探索 CPU worker / next-batch overlap 训练加速
 - 在线主线 P1 已全部完成，可按新 TODO 进入 P2（DocMemory / 更正式的 ValueStore 主线）。
 - 当前已先完成一版“训练地址缓存”作为短期解法；后续若继续优化，再沿 TODO 做地址支路异步化 / overlap。
+- 已将“训练地址缓存”从默认主路径降回可选开关，并把真正的优化主线转到：
+  - 训练期地址支路异步化 / overlap
+  - 在线 SAM sequence 路径的高性能实现
+  - memory window / bookmark
+  - 状态快照 / chunk 起点恢复
 
 ## 备注
 

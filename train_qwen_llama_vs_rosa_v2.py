@@ -550,7 +550,7 @@ def build_chunk_datasets(
     rosa_min_match_len: int,
     special_ids: Optional[set],
     forbid_special_target: bool,
-    enable_train_address_cache: bool = True,
+    enable_train_address_cache: bool = False,
 ):
     if rosa_train_mode not in {"online_seq", "reference_precompute"}:
         raise ValueError(f"未知 rosa_train_mode: {rosa_train_mode}")
@@ -2064,8 +2064,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_train_mode", type=str, default="online_seq",
                         choices=["online_seq", "reference_precompute"],
                         help="online_seq 为新的在线训练主线；reference_precompute 保留旧的 doc-local SAM 预计算回归路径。")
+    parser.add_argument("--enable_rosa_train_address_cache", action="store_true",
+                        help="显式开启 online_seq 训练地址缓存；会在数据集构建期预先缓存整文档 sequence 地址。默认关闭。")
     parser.add_argument("--disable_rosa_train_address_cache", action="store_true",
-                        help="关闭 online_seq 训练地址缓存；默认会为 online_exact/online_sam 预先缓存整文档地址，避免每个 chunk 重放整段前缀。")
+                        help="兼容旧命令行保留；当前训练地址缓存默认已关闭。")
     parser.add_argument("--rosa_recipe", type=str, default="custom",
                         choices=available_rosa_recipe_names(),
                         help="应用一个 ROSA 预设配方。online_v1 会固定 shared value、online_sam、单早层与 context gate。")
@@ -2210,7 +2212,7 @@ def main():
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
-        enable_train_address_cache=not args.disable_rosa_train_address_cache,
+        enable_train_address_cache=(args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

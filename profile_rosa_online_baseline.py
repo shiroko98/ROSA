@@ -47,6 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
                         choices=["reference_backend", "online_exact", "online_sam"])
+    parser.add_argument("--enable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--disable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--rosa_context_gate", action="store_true")
     parser.add_argument("--rosa_hot_cache_size", type=int, default=0)
@@ -279,7 +280,10 @@ def run_train_path_consistency_profile(
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
-        enable_train_address_cache=not getattr(args, "disable_rosa_train_address_cache", False),
+        enable_train_address_cache=(
+            getattr(args, "enable_rosa_train_address_cache", False)
+            and not getattr(args, "disable_rosa_train_address_cache", False)
+        ),
     )
     reference_ds, _, _, reference_meta = rosa_mod.build_chunk_datasets(
         docs_tokens,
@@ -297,7 +301,10 @@ def run_train_path_consistency_profile(
         rosa_min_match_len=args.rosa_min_match_len,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
-        enable_train_address_cache=not getattr(args, "disable_rosa_train_address_cache", False),
+        enable_train_address_cache=(
+            getattr(args, "enable_rosa_train_address_cache", False)
+            and not getattr(args, "disable_rosa_train_address_cache", False)
+        ),
     )
     if len(online_ds) != len(reference_ds):
         raise ValueError(
