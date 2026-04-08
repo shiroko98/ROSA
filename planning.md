@@ -120,6 +120,7 @@
 
 1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
 2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
+3. 训练性能优化先记为后续项：在保持 `online_seq` 定义不变的前提下，尝试地址支路 CPU worker 前移 / next-batch overlap，而不是退回旧离线持久 precompute。
 
 ## 自我验证清单
 

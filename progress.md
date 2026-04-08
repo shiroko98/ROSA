@@ -203,6 +203,7 @@
 - 已在在线主线 TODO 中补充：
   - `ROSA-DocMemory`：外部检索文档作为 side memory
   - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
+  - `训练期地址支路异步化 / overlap`：在不回退到旧离线持久 precompute 的前提下，探索 CPU worker / next-batch overlap 训练加速
 - 在线主线 P1 已全部完成，可按新 TODO 进入 P2（DocMemory / 更正式的 ValueStore 主线）。
 
 ## 备注

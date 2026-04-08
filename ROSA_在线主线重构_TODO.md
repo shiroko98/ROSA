@@ -36,6 +36,7 @@
 | P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
 | P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
 | P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |
+| P2 | 训练期地址支路异步化 / overlap | 不改变 `online_seq` 语义的训练加速方案 | 训练 step 中地址生成不再完全阻塞主干；能比较同步 / worker 前移 / next-batch overlap 三种模式 | 若重新退化成离线持久 precompute，会削弱在线主线的一致性 | 保持 `AddressEngine.forward_seq()` 为主线定义；优先尝试 CPU worker 临时预取本 step address，再尝试与 GPU 主干重叠计算 next batch address |
 | P2 | ROSA × Engram 融合路线 | 文档 memory 与参数化 memory 共存的 hybrid 方案 | 同时支持 `external doc memory` 与 `learned memory table` 两条 value 分支，并可由 gate 融合 | 两类 memory 的优先级与冲突处理复杂 | 先实现 `doc memory branch + learned branch` 的双分支 payload；再研究共享 gate / branch-specific gate |
 | P3 | 服务化 request 生命周期与混批 | 面向 serving 的 ROSA 运行时 | `RosaState`、prefetch、cache、bookmark 在并发请求下生命周期稳定 | 与现有推理框架集成难度高 | 先设计 request API、状态快照、回收与 fallback 策略 |
 
@@ -60,6 +61,7 @@
 2. `ROSA-DocMemory` 接入外部检索文档作为 side memory
 3. compression / memory value / sparse gather 逐步接入
 4. prefetch / cache 在重 value backend 下体现真实收益
+5. 训练阶段探索地址支路 worker 前移 / overlap，减少 `online_sam` 串行地址生成对 step time 的阻塞
 
 ### 里程碑 D：Hybrid Memory
 
@@ -73,6 +75,7 @@
 - 新主线：`teacher forcing 并行主干 + 在线地址 side-branch + 少层注入`。
 - 中期扩展：在这条主线上接入 `ROSA-DocMemory`，使外部检索文档可以像 RAG 一样成为 side memory。
 - 进一步扩展：参考 Engram，将 `external doc memory` 与 `learned memory table` 组合成 hybrid conditional memory。
+- 训练优化方向：在不回退到旧离线持久表的前提下，探索训练期地址支路异步化 / overlap，把 `online_seq` 的定义和执行优化分离。
 - 当前代码基础已经具备较大一部分骨架：
   - 地址抽象
   - value store
