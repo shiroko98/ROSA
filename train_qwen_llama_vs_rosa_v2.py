@@ -6,6 +6,8 @@ import json
 import math
 import os
 import random
+import time
+from contextlib import nullcontext
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -37,6 +39,7 @@ from rosa_addressing import (
 from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 from rosa_session import RosaBatchSession
+from rosa_timing import TimingCollector
 
 try:
     from transformers import AutoTokenizer
@@ -1026,14 +1029,16 @@ class BaseLM(nn.Module):
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+        timing_collector: Optional[TimingCollector] = None,
     ) -> torch.Tensor:
-        x = self.embed_tokens(input_ids)
-        seqlen = input_ids.shape[1]
-        attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
-        attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
-        for blk in self.layers:
-            x = blk(x, attn_mask)
-        x = self.norm(x)
+        with (timing_collector.section("model_trunk") if timing_collector is not None else nullcontext()):
+            x = self.embed_tokens(input_ids)
+            seqlen = input_ids.shape[1]
+            attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
+            attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
+            for blk in self.layers:
+                x = blk(x, attn_mask)
+            x = self.norm(x)
         return x
 
     def forward(
@@ -1045,6 +1050,7 @@ class BaseLM(nn.Module):
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+        timing_collector: Optional[TimingCollector] = None,
     ):
         hidden = self.forward_hidden(
             input_ids,
@@ -1053,16 +1059,19 @@ class BaseLM(nn.Module):
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+            timing_collector=timing_collector,
         )
-        logits = self.lm_head(hidden)
+        with (timing_collector.section("model_head") if timing_collector is not None else nullcontext()):
+            logits = self.lm_head(hidden)
         out = {"logits": logits}
         if labels is not None:
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                labels.reshape(-1),
-                ignore_index=-100,
-                reduction="mean",
-            )
+            with (timing_collector.section("model_loss") if timing_collector is not None else nullcontext()):
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    labels.reshape(-1),
+                    ignore_index=-100,
+                    reduction="mean",
+                )
             out["loss"] = loss
         return out
 
@@ -1321,16 +1330,19 @@ class RosaFusedLM(BaseLM):
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+        timing_collector: Optional[TimingCollector] = None,
     ) -> RosaInjectionPayload:
-        address_batch = self.compute_rosa_address_batch(
-            input_ids,
-            rosa_memory_ids=rosa_memory_ids,
-            rosa_online_state=rosa_online_state,
-            rosa_precomputed_ids=rosa_precomputed_ids,
-            rosa_precomputed_match_lens=rosa_precomputed_match_lens,
-            rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
-        )
-        return self.build_rosa_injection_payload(address_batch, device=input_ids.device)
+        with (timing_collector.section("model_rosa_address") if timing_collector is not None else nullcontext()):
+            address_batch = self.compute_rosa_address_batch(
+                input_ids,
+                rosa_memory_ids=rosa_memory_ids,
+                rosa_online_state=rosa_online_state,
+                rosa_precomputed_ids=rosa_precomputed_ids,
+                rosa_precomputed_match_lens=rosa_precomputed_match_lens,
+                rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+            )
+        with (timing_collector.section("model_rosa_payload") if timing_collector is not None else nullcontext()):
+            return self.build_rosa_injection_payload(address_batch, device=input_ids.device)
 
     def schedule_rosa_prefetch(
         self,
@@ -1398,12 +1410,8 @@ class RosaFusedLM(BaseLM):
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+        timing_collector: Optional[TimingCollector] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        x = self.embed_tokens(input_ids)
-        seqlen = input_ids.shape[1]
-        attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
-        attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
-
         if rosa_payload is None:
             rosa_payload = self.prepare_rosa_injection_payload(
                 input_ids,
@@ -1412,45 +1420,51 @@ class RosaFusedLM(BaseLM):
                 rosa_precomputed_ids=rosa_precomputed_ids,
                 rosa_precomputed_match_lens=rosa_precomputed_match_lens,
                 rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+                timing_collector=timing_collector,
             )
         else:
             rosa_payload = rosa_payload.to(input_ids.device)
 
-        rosa_ids = rosa_payload.address.addr_ids
-        fired_match_lens = rosa_payload.address.fired_match_lens
-        raw_best_lens = rosa_payload.address.raw_match_lens
-        active = (rosa_ids >= 0)
+        with (timing_collector.section("model_trunk") if timing_collector is not None else nullcontext()):
+            x = self.embed_tokens(input_ids)
+            seqlen = input_ids.shape[1]
+            attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
+            attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
 
-        if self.use_match_len_gate:
-            # 比硬阈值更稳的软门控：m 越大，权重越强
-            len_scale = torch.log1p(fired_match_lens.float()).unsqueeze(-1)
-        else:
-            len_scale = torch.ones_like(fired_match_lens, dtype=torch.float).unsqueeze(-1)
-        active_mask = active.unsqueeze(-1)
-        gate_values: List[torch.Tensor] = []
-        gate_open_flags: List[torch.Tensor] = []
+            rosa_ids = rosa_payload.address.addr_ids
+            fired_match_lens = rosa_payload.address.fired_match_lens
+            raw_best_lens = rosa_payload.address.raw_match_lens
+            active = (rosa_ids >= 0)
 
-        for layer_idx, blk in enumerate(self.layers):
-            slot_idx = self.inject_layer_index.get(layer_idx)
-            if slot_idx is not None:
-                rosa_value = rosa_payload.layer_values[slot_idx]
-                if self.use_context_gate:
-                    gate = self.compute_rosa_context_gate(
-                        slot_idx,
-                        x,
-                        rosa_value,
-                        fired_match_lens,
-                    )
-                    value_out = self.rosa_gate_value_projs[slot_idx](rosa_value)
-                    rosa_resid = value_out * gate * self.rosa_scale
-                    gate_values.append(gate)
-                    gate_open_flags.append(gate.gt(0.5))
-                else:
-                    rosa_resid = rosa_value * len_scale * self.rosa_scale
-                rosa_resid = rosa_resid * active_mask
-                x = x + rosa_resid
-            x = blk(x, attn_mask)
-        x = self.norm(x)
+            if self.use_match_len_gate:
+                len_scale = torch.log1p(fired_match_lens.float()).unsqueeze(-1)
+            else:
+                len_scale = torch.ones_like(fired_match_lens, dtype=torch.float).unsqueeze(-1)
+            active_mask = active.unsqueeze(-1)
+            gate_values: List[torch.Tensor] = []
+            gate_open_flags: List[torch.Tensor] = []
+
+            for layer_idx, blk in enumerate(self.layers):
+                slot_idx = self.inject_layer_index.get(layer_idx)
+                if slot_idx is not None:
+                    rosa_value = rosa_payload.layer_values[slot_idx]
+                    if self.use_context_gate:
+                        gate = self.compute_rosa_context_gate(
+                            slot_idx,
+                            x,
+                            rosa_value,
+                            fired_match_lens,
+                        )
+                        value_out = self.rosa_gate_value_projs[slot_idx](rosa_value)
+                        rosa_resid = value_out * gate * self.rosa_scale
+                        gate_values.append(gate)
+                        gate_open_flags.append(gate.gt(0.5))
+                    else:
+                        rosa_resid = rosa_value * len_scale * self.rosa_scale
+                    rosa_resid = rosa_resid * active_mask
+                    x = x + rosa_resid
+                x = blk(x, attn_mask)
+            x = self.norm(x)
 
         raw_has_match = raw_best_lens.gt(0)
         address_source = rosa_payload.address.source
@@ -1502,6 +1516,7 @@ class RosaFusedLM(BaseLM):
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+        timing_collector: Optional[TimingCollector] = None,
     ):
         hidden, stats = self.forward_hidden(
             input_ids,
@@ -1511,16 +1526,19 @@ class RosaFusedLM(BaseLM):
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
+            timing_collector=timing_collector,
         )
-        logits = self.lm_head(hidden)
+        with (timing_collector.section("model_head") if timing_collector is not None else nullcontext()):
+            logits = self.lm_head(hidden)
         out = {"logits": logits, **stats}
         if labels is not None:
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                labels.reshape(-1),
-                ignore_index=-100,
-                reduction="mean",
-            )
+            with (timing_collector.section("model_loss") if timing_collector is not None else nullcontext()):
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    labels.reshape(-1),
+                    ignore_index=-100,
+                    reduction="mean",
+                )
             out["loss"] = loss
         return out
 
@@ -1567,7 +1585,24 @@ def safe_ppl(loss: float) -> float:
     return math.exp(loss)
 
 
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, pad_id: int) -> Dict[str, float]:
+def average_prefixed_metric(rows: Sequence[Dict[str, float]], prefix: str) -> Dict[str, float]:
+    if not rows:
+        return {}
+    keys = sorted({key for row in rows for key in row.keys() if key.startswith(prefix)})
+    return {
+        key: sum(float(row.get(key, 0.0)) for row in rows) / len(rows)
+        for key in keys
+    }
+
+
+def evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    pad_id: int,
+    *,
+    collect_timing: bool = False,
+) -> Dict[str, float]:
     model.eval()
     total_nll = 0.0
     total_tokens = 0
@@ -1575,23 +1610,30 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, pad_id:
 
     rosa_stats_sum: Dict[str, float] = {}
     rosa_steps = 0
+    timing_rows: List[Dict[str, float]] = []
+    next_batch_started_at = time.perf_counter()
 
     with torch.no_grad():
         for batch in loader:
+            step_timer = TimingCollector(enabled=collect_timing, device=device)
+            step_timer.add_seconds("eval_data_wait", time.perf_counter() - next_batch_started_at)
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
             pre_ids = batch.get("rosa_precomputed_ids")
             pre_match = batch.get("rosa_precomputed_match_lens")
             pre_raw = batch.get("rosa_precomputed_raw_best_lens")
             y = labels_with_ignore(batch["labels"].to(device), pad_id)
-            out = model(
-                x,
-                y,
-                rosa_memory_ids=mem,
-                rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
-                rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
-                rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
-            )
+            model_timer = TimingCollector(enabled=collect_timing, device=device)
+            with step_timer.section("eval_forward"):
+                out = model(
+                    x,
+                    y,
+                    rosa_memory_ids=mem,
+                    rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
+                    rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
+                    rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+                    timing_collector=model_timer,
+                )
 
             loss = out["loss"]  # per-token mean CE
             mask = y.ne(-100)
@@ -1608,6 +1650,13 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, pad_id:
                 for k in rosa_keys:
                     rosa_stats_sum[k] = rosa_stats_sum.get(k, 0.0) + float(out[k])
                 rosa_steps += 1
+            if collect_timing:
+                row = {}
+                row.update(step_timer.export_ms())
+                row.update(model_timer.export_ms())
+                row["timing_eval_tokens_per_s"] = num / max(row.get("timing_eval_forward_ms", 0.0) / 1000.0, 1e-12)
+                timing_rows.append(row)
+            next_batch_started_at = time.perf_counter()
 
     loss = total_nll / max(1, total_tokens)
     metrics = {
@@ -1619,6 +1668,8 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, pad_id:
     if rosa_steps > 0:
         for k, v in rosa_stats_sum.items():
             metrics[k] = v / rosa_steps
+    if collect_timing and timing_rows:
+        metrics.update(average_prefixed_metric(timing_rows, "timing_"))
     return metrics
 
 
@@ -1633,6 +1684,7 @@ def train_one_model(
     weight_decay: float,
     grad_clip: float,
     use_bf16: bool,
+    collect_timing: bool = False,
 ) -> Dict[str, List[Dict[str, float]]]:
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=(0.9, 0.95))
@@ -1647,8 +1699,12 @@ def train_one_model(
 
         rosa_stats_sum: Dict[str, float] = {}
         rosa_steps = 0
+        timing_rows: List[Dict[str, float]] = []
+        next_batch_started_at = time.perf_counter()
 
         for batch in train_loader:
+            step_timer = TimingCollector(enabled=collect_timing, device=device)
+            step_timer.add_seconds("data_wait", time.perf_counter() - next_batch_started_at)
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
             pre_ids = batch.get("rosa_precomputed_ids")
@@ -1656,9 +1712,24 @@ def train_one_model(
             pre_raw = batch.get("rosa_precomputed_raw_best_lens")
             y = labels_with_ignore(batch["labels"].to(device), pad_id)
 
-            optimizer.zero_grad(set_to_none=True)
+            with step_timer.section("optim_zero_grad"):
+                optimizer.zero_grad(set_to_none=True)
+            model_timer = TimingCollector(enabled=collect_timing, device=device)
             if amp_enabled:
-                with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                with step_timer.section("forward"):
+                    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                        out = model(
+                            x,
+                            y,
+                            rosa_memory_ids=mem,
+                            rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
+                            rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
+                            rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+                            timing_collector=model_timer,
+                        )
+                        loss = out["loss"]
+            else:
+                with step_timer.section("forward"):
                     out = model(
                         x,
                         y,
@@ -1666,23 +1737,16 @@ def train_one_model(
                         rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
                         rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
                         rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+                        timing_collector=model_timer,
                     )
                     loss = out["loss"]
-            else:
-                out = model(
-                    x,
-                    y,
-                    rosa_memory_ids=mem,
-                    rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
-                    rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
-                    rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
-                )
-                loss = out["loss"]
 
-            loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
+            with step_timer.section("backward"):
+                loss.backward()
+            with step_timer.section("optim_step"):
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
 
             mask = y.ne(-100)
             num = mask.sum().item()
@@ -1697,6 +1761,20 @@ def train_one_model(
                 for k in rosa_keys:
                     rosa_stats_sum[k] = rosa_stats_sum.get(k, 0.0) + float(out[k])
                 rosa_steps += 1
+            if collect_timing:
+                row = {}
+                row.update(step_timer.export_ms())
+                row.update(model_timer.export_ms())
+                row["timing_step_ms"] = (
+                    row.get("timing_data_wait_ms", 0.0)
+                    + row.get("timing_optim_zero_grad_ms", 0.0)
+                    + row.get("timing_forward_ms", 0.0)
+                    + row.get("timing_backward_ms", 0.0)
+                    + row.get("timing_optim_step_ms", 0.0)
+                )
+                row["timing_tokens_per_s"] = num / max(row["timing_step_ms"] / 1000.0, 1e-12)
+                timing_rows.append(row)
+            next_batch_started_at = time.perf_counter()
 
         train_loss = total_nll / max(1, total_tokens)
         train_metrics = {
@@ -1709,8 +1787,10 @@ def train_one_model(
         if rosa_steps > 0:
             for k, v in rosa_stats_sum.items():
                 train_metrics[k] = v / rosa_steps
+        if collect_timing and timing_rows:
+            train_metrics.update(average_prefixed_metric(timing_rows, "timing_"))
 
-        val_metrics = evaluate(model, val_loader, device, pad_id)
+        val_metrics = evaluate(model, val_loader, device, pad_id, collect_timing=collect_timing)
         val_metrics["epoch"] = epoch
 
         history["train"].append(train_metrics)
@@ -1728,6 +1808,25 @@ def train_one_model(
             f"train loss {train_metrics['loss']:.4f} ppl {train_metrics['ppl']:.4f} acc {train_metrics['token_acc']:.4f}{train_extra} | "
             f"val loss {val_metrics['loss']:.4f} ppl {val_metrics['ppl']:.4f} acc {val_metrics['token_acc']:.4f}{val_extra}"
         )
+        if collect_timing:
+            timing_parts = [
+                f"step {train_metrics.get('timing_step_ms', 0.0):.2f}ms",
+                f"data {train_metrics.get('timing_data_wait_ms', 0.0):.2f}ms",
+                f"fwd {train_metrics.get('timing_forward_ms', 0.0):.2f}ms",
+                f"bwd {train_metrics.get('timing_backward_ms', 0.0):.2f}ms",
+                f"opt {train_metrics.get('timing_optim_step_ms', 0.0):.2f}ms",
+                f"tok/s {train_metrics.get('timing_tokens_per_s', 0.0):.1f}",
+            ]
+            if "timing_model_rosa_address_ms" in train_metrics:
+                timing_parts.extend(
+                    [
+                        f"rosa_addr {train_metrics.get('timing_model_rosa_address_ms', 0.0):.2f}ms",
+                        f"rosa_payload {train_metrics.get('timing_model_rosa_payload_ms', 0.0):.2f}ms",
+                        f"trunk {train_metrics.get('timing_model_trunk_ms', 0.0):.2f}ms",
+                        f"head {train_metrics.get('timing_model_head_ms', 0.0):.2f}ms",
+                    ]
+                )
+            print("timing | " + " | ".join(timing_parts))
     return history
 
 
@@ -1832,6 +1931,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_allow_special_target", action="store_true")
     parser.add_argument("--rosa_disable_match_len_gate", action="store_true",
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
+    parser.add_argument("--train_timing", action="store_true",
+                        help="输出训练/评估阶段的同步 timing 统计；在 CUDA 上会加入 synchronize，适合定位慢点，不建议作为默认长期训练配置。")
     parser.add_argument("--out_dir", type=str, default="outputs/rosa_compare")
     return parser
 
@@ -1913,6 +2014,7 @@ def main():
     print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
     print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
+    print(f"训练 timing: {args.train_timing}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     if recipe_meta["applied"]:
         print(f"ROSA recipe detail: {recipe_meta['description']}")
@@ -1997,8 +2099,15 @@ def main():
         pad_id=tokenizer.pad_token_id,
         epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
         grad_clip=args.grad_clip, use_bf16=args.bf16,
+        collect_timing=args.train_timing,
     )
-    base_test = evaluate(baseline.to(device), test_loader, device, tokenizer.pad_token_id)
+    base_test = evaluate(
+        baseline.to(device),
+        test_loader,
+        device,
+        tokenizer.pad_token_id,
+        collect_timing=args.train_timing,
+    )
 
     print("\n==== 训练 rosa-fused ====")
     set_seed(args.seed)
@@ -2029,8 +2138,15 @@ def main():
         pad_id=tokenizer.pad_token_id,
         epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
         grad_clip=args.grad_clip, use_bf16=args.bf16,
+        collect_timing=args.train_timing,
     )
-    rosa_test = evaluate(rosa_model.to(device), test_loader, device, tokenizer.pad_token_id)
+    rosa_test = evaluate(
+        rosa_model.to(device),
+        test_loader,
+        device,
+        tokenizer.pad_token_id,
+        collect_timing=args.train_timing,
+    )
 
     summary = {
         "args": vars(args),
@@ -2059,6 +2175,7 @@ def main():
             "seq_address_mode": args.rosa_seq_address_mode,
             "context_gate": args.rosa_context_gate,
             "hot_cache_size": args.rosa_hot_cache_size,
+            "train_timing": args.train_timing,
         },
         "dataset": {
             "source": dataset_source,

@@ -662,6 +662,77 @@ class RosaHotCacheIntegrationTests(unittest.TestCase):
         self.assertEqual(model.get_hot_cache_stats()["token_requests"], 0.0)
 
 
+class TrainingTimingTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+        docs_tokens = [
+            [1, 2, 1, 2, 3, 4],
+            [5, 6, 5, 6, 7, 8],
+            [9, 10, 9, 10, 11, 12],
+        ]
+        self.dataset = rosa_mod.DocChunkDataset(
+            docs_tokens,
+            seq_len=4,
+            pad_id=0,
+            stride=4,
+            rosa_memory_tokens=8,
+            full_doc_memory=True,
+        )
+
+    def test_train_one_model_collects_timing_metrics(self):
+        train_loader, val_loader, _ = rosa_mod.build_dataloaders(
+            self.dataset,
+            self.dataset,
+            self.dataset,
+            batch_size=2,
+            pad_id=0,
+            train_seed=2026,
+        )
+        rosa_mod.set_seed(9090)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=1,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=True,
+        )
+
+        history = rosa_mod.train_one_model(
+            model,
+            train_loader,
+            val_loader,
+            device=torch.device("cpu"),
+            pad_id=0,
+            epochs=1,
+            lr=1e-3,
+            weight_decay=0.0,
+            grad_clip=1.0,
+            use_bf16=False,
+            collect_timing=True,
+        )
+
+        train_row = history["train"][0]
+        val_row = history["val"][0]
+        self.assertIn("timing_step_ms", train_row)
+        self.assertIn("timing_forward_ms", train_row)
+        self.assertIn("timing_model_rosa_address_ms", train_row)
+        self.assertIn("timing_model_rosa_payload_ms", train_row)
+        self.assertIn("timing_model_trunk_ms", train_row)
+        self.assertIn("timing_eval_forward_ms", val_row)
+        self.assertIn("timing_model_rosa_address_ms", val_row)
+        self.assertGreater(train_row["timing_step_ms"], 0.0)
+        self.assertGreater(val_row["timing_eval_forward_ms"], 0.0)
+
+
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
         docs = [[1, 2, 1, 2, 3]]

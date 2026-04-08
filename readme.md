@@ -196,6 +196,27 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `hot_cache.decode_micro`
 - 当前 decode 指标是无 KV cache 的单步 microbenchmark，适合比较 ROSA 分支路径开销与一致性，不等同于最终 serving 吞吐。
 
+## Training Timing
+
+- 开关：`--train_timing`
+- 作用：输出训练/评估阶段的同步 timing 统计，帮助判断 `rosa_fused` 到底慢在：
+  - `data_wait`
+  - `forward`
+  - `backward`
+  - `optim_step`
+  - `model_rosa_address`
+  - `model_rosa_payload`
+  - `model_trunk`
+  - `model_head`
+- 说明：
+  - 在 CUDA 上会显式 `synchronize`，统计更准，但会带来额外开销
+  - 适合定位瓶颈，不建议长期作为默认训练配置
+- 当前一次 `64/16/16` 小实验观测：
+  - baseline `step ~37.9ms`
+  - rosa_fused `step ~124.1ms`
+  - 其中 `rosa_addr ~85.7ms`
+  - 说明当前体感变慢主要来自在线地址生成，而不是主干 Transformer 或 value payload
+
 ## VS Code Launch
 
 - `ROSA v2 - Online Baseline Profile (Smoke)`：快速验证脚本链路。

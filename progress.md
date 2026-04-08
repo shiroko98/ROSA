@@ -29,6 +29,7 @@
 - [x] 在线主线 P1-4: 让 prefetch / staging / hot cache 服务于新主线
 - [x] 在线主线 P1-1: 固化在线训练 V1 配方
 - [x] 在线主线 P1-5: 训练/推理统一注入层搜索协议
+- [x] 训练阶段 timing 监控与慢点定位
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -146,6 +147,11 @@
   - `layers_*/train/train_summary.json`
 - 合并结论统一写到：
   - `layer_scan_report.json`
+- 新增 `rosa_timing.py`
+- `train_qwen_llama_vs_rosa_v2.py` 已支持 `--train_timing`
+- 当前 timing 输出已覆盖：
+  - 训练循环：`data_wait / forward / backward / optim_step / step / tokens_per_s`
+  - 模型内部：`model_rosa_address / model_rosa_payload / model_trunk / model_head / model_loss`
 
 ## 自我验证记录
 
@@ -168,7 +174,8 @@
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_sam --rosa_prefetch --rosa_hot_cache_size 8`（在线主线 P1-4 smoke）
 - `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v1`（在线主线 P1-1 smoke）
 - `conda run -n model python scan_rosa_injection_layers.py ... --experiment_mode both --rosa_recipe online_v1`（在线主线 P1-5 smoke）
-- 结果：当前共 55 个测试，全部通过；在线主线 P0 与 P1 各项任务均已落地。
+- `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v1 --train_timing`（训练 timing 小实验）
+- 结果：当前共 56 个测试，全部通过；在线主线 P0 与 P1 各项任务均已落地。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
 - 训练入口切换结论：当前默认训练主线已不再依赖 `rosa_precomputed_ids`；reference 预计算路径仍可通过显式 `train_mode` 单独回归。
@@ -180,6 +187,7 @@
 - 在线训练 V1 结论：`online_v1` 配方已经可直接训练，当前小样本 smoke 上 test loss `17.80 -> 17.38`、token acc `0.0377 -> 0.0389`，且地址来源已完全切到 `online_seq + online_sam`。
 - 统一层位 sweep 结论：当前同一份 `inject_layer_ids` 组合已经可以同时产出训练指标与 profile 指标，训练/推理层位实验不再分裂成两套入口。
 - 最新统一 sweep smoke：`outputs/scan_p1_train_profile_smoke/layer_scan_report.json` 已成功落盘，当前 toy smoke 上 `layer 0` 优于 `layer 1`。
+- 训练 timing 结论：当前 `64/16/16` 小实验里，baseline 平均 `step ~37.9ms`，rosa_fused 平均 `step ~124.1ms`；慢点主要集中在 `rosa_addr ~85.7ms`，说明当前体感变慢主要来自在线地址生成支路，而不是主干或 payload。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
@@ -194,6 +202,7 @@
   - `outputs/profile_p1_session_prefetch_smoke/profile_report.json`
   - `outputs/p1_online_v1_smoke_qwen/comparison.json`
   - `outputs/scan_p1_train_profile_smoke/layer_scan_report.json`
+  - `outputs/compare_small_online_v1_64docs_timing/comparison.json`
 
 ## 下一步
 
@@ -205,6 +214,7 @@
   - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
   - `训练期地址支路异步化 / overlap`：在不回退到旧离线持久 precompute 的前提下，探索 CPU worker / next-batch overlap 训练加速
 - 在线主线 P1 已全部完成，可按新 TODO 进入 P2（DocMemory / 更正式的 ValueStore 主线）。
+- 训练 timing 已证明慢点主要在地址支路，这和 TODO 里新增的“训练期地址支路异步化 / overlap”方向一致。
 
 ## 备注
 
