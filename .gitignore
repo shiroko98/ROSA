@@ -8,10 +8,7 @@ __pycache__/
 data/
 outputs/
 rosa_runs/
-文档/*
-!文档/generate_current_rosa_tech_ppt.ps1
-!文档/当前ROSA实现技术汇报_5页.md
-!文档/当前ROSA实现技术汇报_5页.pptx
+文档/
 
 *.pt
 *.bin
