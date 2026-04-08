@@ -24,6 +24,18 @@
 - 仍保留：`--rosa_online_sam_impl stateful` 作为逐 token SAM 回归/对照实现
 - 后续真正的高性能目标不再是 Python 级“快一点”，而是进一步下沉到 C++/CUDA/Triton 等更低开销实现
 
+## 状态说明
+
+- `已完成`：已经实现、验证并纳入当前主线或参考路径
+- `进行中`：已有 v1/部分实现，但还没达到该行“完成标准”的最终形态
+- `未开始`：尚未进入工程实现
+
+## 当前统计
+
+- `已完成`：10 项
+- `进行中`：2 项
+- `未开始`：9 项
+
 ## 性能优化待办补充
 
 - 训练地址异步预取 v2
@@ -59,29 +71,29 @@
 
 ## 在线主线路线图
 
-| 优先级 | 任务 | 目标输出 | 完成标准 | 主要风险 | 工程上的细分实现 |
-| --- | --- | --- | --- | --- | --- |
-| P0 | 明确旧路径退位为 reference/fallback | 新旧路径职责划分文档与配置开关 | 训练主入口默认不再依赖 `rosa_precomputed_ids`；旧路径仍能单独跑回归 | 主线切换过早会影响现有实验连续性 | 增加 `train_mode=reference_precompute / online_seq`；文档中明确 local/global 的定位 |
-| P0 | 定义训练主形态：并行主干 + 在线地址 side-branch | `AddressEngine.forward_seq(input_ids, memory)` 接口 | 在 `[B, T]` teacher forcing 下返回整段 `addr_id/raw_match_len/fired_match_len/valid_mask` | 若实现退化成 Python 逐 token loop，训练吞吐会明显下降 | 新增 sequence-level 地址引擎接口；先允许 CPU 侧顺序扫描版本 |
-| P0 | 让训练集不再以 `rosa_precomputed_ids` 为主输入 | 更干净的 `DocChunkDataset` 输出 | 数据集主要只产出 `input_ids / labels / optional_memory / meta` | 切换过程中可能影响现有 collate 与训练循环 | 保留可选 precomputed 字段，但在线主线默认不依赖它们 |
-| P0 | 在训练前向中接入 `forward_seq()` | 在线训练版 `RosaFusedLM.forward()` | 不传 `rosa_precomputed_ids` 时，也能稳定训练与反传 | 地址路径与注入路径的张量 shape 容易对不齐 | `compute_rosa_address_batch()` 支持 sequence-online 模式；整段构建 `RosaAddressBatch` |
-| P0 | 建立“在线训练 vs reference 预计算”一致性回归 | 对齐测试与 smoke 报告 | 在同一输入上，新训练路径与旧 reference 地址结果逐位置对齐 | online/address 代码一旦分叉，后面很难维护 | 新增逐位置地址一致性测试；在 profile 中增加训练形态对照 |
-| P1 | 训练 V1：shared value + 1 个早层 + context gate | 第一版真正统一训练/推理组件的在线训练主线 | 小样本训练可跑通，loss 正常下降，指标不劣于旧主线太多 | 早期训练可能因 gate 或注入位置不稳而震荡 | value 先复用 `embed_tokens`；注入层先限定为 1 个早层；保留 `match_len prior` |
-| P1 | 统一推理主形态：prefill + decode 共用 RosaState | 一个有稳定生命周期的 `RosaState` | prefill 后 decode 能无缝续接，地址结果与训练期定义一致 | request 生命周期、混批与 cache 生命周期容易出错 | 区分 `RosaState.prefill_seq()` 与 `update_one()`；统一 payload / prefetch / cache 生命周期 |
-| P1 | 用真正的在线状态结构替换参考级 list-state | 高性能 `OnlineRosaState` | 不再依赖 `exact_match_step_address(list)` 做主线 | 状态机构造与 fallback/clone 逻辑复杂 | 将当前 reference state 保留为基线；新增 suffix automaton state 实现并做逐 token 对齐 |
-| P1 | 让 prefetch / staging / hot cache 服务于新主线 | 在线推理流水线优化版 | decode 中能观测到稳定的 prefetch hit / cache hit，并且不破坏语义 | 当前 value backend 过轻，优化收益不容易显现 | 保留 stats 优先；先做正确性与稳定性，再评估真实收益 |
-| P1 | 训练/推理统一注入层搜索协议 | 一套可复用的层位实验配置 | 训练和 profile 都支持 `inject_layer_ids`，结论可复现 | 训练期最好层位与推理期最好层位未必一致 | 扩展扫描脚本，增加训练小样本 sweep 与 profile 对齐报告 |
-| P2 | 接入外部文档 memory（ROSA-DocMemory） | 类 RAG 的 ROSA 文档参考路径 | 推理时可将检索到的文档作为 `optional_memory` 注入 `RosaState`；prefill/decode 可稳定使用 | 文档排序、截断和 memory 污染会影响命中质量 | 先支持 `retrieved_docs -> token stream memory`；再考虑 bookmark / anchor / compression |
-| P2 | 训练 V2：per-layer ValueStore 正式接入在线训练主线 | 在线训练版大 ValueStore | `per_layer` 成为在线训练默认实验对象之一 | 参数量和显存/主存成本上升 | 将 `per_layer` 从“功能可用”推进到“主线训练可复现” |
-| P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
-| P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
-| P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |
-| P2 | 在线 SAM sequence 路径下沉到高性能实现 | 比 `SuffixAutomatonRosaState.update_one()` 更快的训练期 sequence 地址引擎 | 训练期 `online_seq + online_sam` 不再主要耗时在 Python 逐 token 状态推进；与现有 step/session 语义保持一致 | 若训练 sequence 路径与推理 step 路径语义漂移，会破坏一致性 | 保留 step/session 的真实在线 SAM；单独为 `forward_seq()` 实现 array-backed / fused SAM sequence 版本，并做逐位置一致性回归 |
-| P2 | 训练期地址支路异步化 / overlap | 不改变 `online_seq` 语义的训练加速方案 | 训练 step 中地址生成不再完全阻塞主干；能比较同步 / worker 前移 / next-batch overlap 三种模式 | 若重新退化成离线持久 precompute，会削弱在线主线的一致性 | 保持 `AddressEngine.forward_seq()` 为主线定义；优先尝试 CPU worker 临时预取本 step address，再尝试与 GPU 主干重叠计算 next batch address |
-| P2 | 训练期 memory 范围控制与 bookmark/window 实验 | 不依赖 full doc prefix 的轻量在线训练配置 | 在较短 memory window 下维持大部分收益，同时显著降低地址构建规模 | window 过短会伤害匹配覆盖率 | 先支持固定 tail window，再实验 bookmark / anchor / canonicalization，比较 coverage / speed / loss |
-| P2 | 文档级状态快照与 chunk 起点增量恢复 | 比“整文档地址全缓存”更省内存的训练执行模式 | 大数据集下无需为每个 sample 复制 `rosa_precomputed_*`，可通过起点快照 + 短 replay 恢复在线状态 | snapshot/restore 的正确性和 clone 成本需要严格验证 | 先做 chunk 起点 `RosaStateSnapshot` 缓存，再尝试“每 K token 一个 snapshot + 局部 replay”的折中方案 |
-| P2 | ROSA × Engram 融合路线 | 文档 memory 与参数化 memory 共存的 hybrid 方案 | 同时支持 `external doc memory` 与 `learned memory table` 两条 value 分支，并可由 gate 融合 | 两类 memory 的优先级与冲突处理复杂 | 先实现 `doc memory branch + learned branch` 的双分支 payload；再研究共享 gate / branch-specific gate |
-| P3 | 服务化 request 生命周期与混批 | 面向 serving 的 ROSA 运行时 | `RosaState`、prefetch、cache、bookmark 在并发请求下生命周期稳定 | 与现有推理框架集成难度高 | 先设计 request API、状态快照、回收与 fallback 策略 |
+| 状态 | 优先级 | 任务 | 目标输出 | 完成标准 | 主要风险 | 工程上的细分实现 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 已完成 | P0 | 明确旧路径退位为 reference/fallback | 新旧路径职责划分文档与配置开关 | 训练主入口默认不再依赖 `rosa_precomputed_ids`；旧路径仍能单独跑回归 | 主线切换过早会影响现有实验连续性 | 增加 `train_mode=reference_precompute / online_seq`；文档中明确 local/global 的定位 |
+| 已完成 | P0 | 定义训练主形态：并行主干 + 在线地址 side-branch | `AddressEngine.forward_seq(input_ids, memory)` 接口 | 在 `[B, T]` teacher forcing 下返回整段 `addr_id/raw_match_len/fired_match_len/valid_mask` | 若实现退化成 Python 逐 token loop，训练吞吐会明显下降 | 新增 sequence-level 地址引擎接口；先允许 CPU 侧顺序扫描版本 |
+| 已完成 | P0 | 让训练集不再以 `rosa_precomputed_ids` 为主输入 | 更干净的 `DocChunkDataset` 输出 | 数据集主要只产出 `input_ids / labels / optional_memory / meta` | 切换过程中可能影响现有 collate 与训练循环 | 保留可选 precomputed 字段，但在线主线默认不依赖它们 |
+| 已完成 | P0 | 在训练前向中接入 `forward_seq()` | 在线训练版 `RosaFusedLM.forward()` | 不传 `rosa_precomputed_ids` 时，也能稳定训练与反传 | 地址路径与注入路径的张量 shape 容易对不齐 | `compute_rosa_address_batch()` 支持 sequence-online 模式；整段构建 `RosaAddressBatch` |
+| 已完成 | P0 | 建立“在线训练 vs reference 预计算”一致性回归 | 对齐测试与 smoke 报告 | 在同一输入上，新训练路径与旧 reference 地址结果逐位置对齐 | online/address 代码一旦分叉，后面很难维护 | 新增逐位置地址一致性测试；在 profile 中增加训练形态对照 |
+| 已完成 | P1 | 训练 V1：shared value + 1 个早层 + context gate | 第一版真正统一训练/推理组件的在线训练主线 | 小样本训练可跑通，loss 正常下降，指标不劣于旧主线太多 | 早期训练可能因 gate 或注入位置不稳而震荡 | value 先复用 `embed_tokens`；注入层先限定为 1 个早层；保留 `match_len prior` |
+| 已完成 | P1 | 统一推理主形态：prefill + decode 共用 RosaState | 一个有稳定生命周期的 `RosaState` | prefill 后 decode 能无缝续接，地址结果与训练期定义一致 | request 生命周期、混批与 cache 生命周期容易出错 | 区分 `RosaState.prefill_seq()` 与 `update_one()`；统一 payload / prefetch / cache 生命周期 |
+| 已完成 | P1 | 用真正的在线状态结构替换参考级 list-state | 高性能 `OnlineRosaState` | 不再依赖 `exact_match_step_address(list)` 做主线 | 状态机构造与 fallback/clone 逻辑复杂 | 将当前 reference state 保留为基线；新增 suffix automaton state 实现并做逐 token 对齐 |
+| 已完成 | P1 | 让 prefetch / staging / hot cache 服务于新主线 | 在线推理流水线优化版 | decode 中能观测到稳定的 prefetch hit / cache hit，并且不破坏语义 | 当前 value backend 过轻，优化收益不容易显现 | 保留 stats 优先；先做正确性与稳定性，再评估真实收益 |
+| 已完成 | P1 | 训练/推理统一注入层搜索协议 | 一套可复用的层位实验配置 | 训练和 profile 都支持 `inject_layer_ids`，结论可复现 | 训练期最好层位与推理期最好层位未必一致 | 扩展扫描脚本，增加训练小样本 sweep 与 profile 对齐报告 |
+| 未开始 | P2 | 接入外部文档 memory（ROSA-DocMemory） | 类 RAG 的 ROSA 文档参考路径 | 推理时可将检索到的文档作为 `optional_memory` 注入 `RosaState`；prefill/decode 可稳定使用 | 文档排序、截断和 memory 污染会影响命中质量 | 先支持 `retrieved_docs -> token stream memory`；再考虑 bookmark / anchor / compression |
+| 未开始 | P2 | 训练 V2：per-layer ValueStore 正式接入在线训练主线 | 在线训练版大 ValueStore | `per_layer` 成为在线训练默认实验对象之一 | 参数量和显存/主存成本上升 | 将 `per_layer` 从“功能可用”推进到“主线训练可复现” |
+| 未开始 | P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
+| 未开始 | P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
+| 未开始 | P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |
+| 进行中（已完成 fast v1） | P2 | 在线 SAM sequence 路径下沉到高性能实现 | 比 `SuffixAutomatonRosaState.update_one()` 更快的训练期 sequence 地址引擎 | 训练期 `online_seq + online_sam` 不再主要耗时在 Python 逐 token 状态推进；与现有 step/session 语义保持一致 | 若训练 sequence 路径与推理 step 路径语义漂移，会破坏一致性 | 保留 step/session 的真实在线 SAM；单独为 `forward_seq()` 实现 array-backed / fused SAM sequence 版本，并做逐位置一致性回归 |
+| 进行中（已完成 overlap v1） | P2 | 训练期地址支路异步化 / overlap | 不改变 `online_seq` 语义的训练加速方案 | 训练 step 中地址生成不再完全阻塞主干；能比较同步 / worker 前移 / next-batch overlap 三种模式 | 若重新退化成离线持久 precompute，会削弱在线主线的一致性 | 保持 `AddressEngine.forward_seq()` 为主线定义；优先尝试 CPU worker 临时预取本 step address，再尝试与 GPU 主干重叠计算 next batch address |
+| 未开始 | P2 | 训练期 memory 范围控制与 bookmark/window 实验 | 不依赖 full doc prefix 的轻量在线训练配置 | 在较短 memory window 下维持大部分收益，同时显著降低地址构建规模 | window 过短会伤害匹配覆盖率 | 先支持固定 tail window，再实验 bookmark / anchor / canonicalization，比较 coverage / speed / loss |
+| 未开始 | P2 | 文档级状态快照与 chunk 起点增量恢复 | 比“整文档地址全缓存”更省内存的训练执行模式 | 大数据集下无需为每个 sample 复制 `rosa_precomputed_*`，可通过起点快照 + 短 replay 恢复在线状态 | snapshot/restore 的正确性和 clone 成本需要严格验证 | 先做 chunk 起点 `RosaStateSnapshot` 缓存，再尝试“每 K token 一个 snapshot + 局部 replay”的折中方案 |
+| 未开始 | P2 | ROSA × Engram 融合路线 | 文档 memory 与参数化 memory 共存的 hybrid 方案 | 同时支持 `external doc memory` 与 `learned memory table` 两条 value 分支，并可由 gate 融合 | 两类 memory 的优先级与冲突处理复杂 | 先实现 `doc memory branch + learned branch` 的双分支 payload；再研究共享 gate / branch-specific gate |
+| 未开始 | P3 | 服务化 request 生命周期与混批 | 面向 serving 的 ROSA 运行时 | `RosaState`、prefetch、cache、bookmark 在并发请求下生命周期稳定 | 与现有推理框架集成难度高 | 先设计 request API、状态快照、回收与 fallback 策略 |
 
 ## 里程碑建议
 

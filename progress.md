@@ -266,6 +266,10 @@
   - memory window / bookmark
   - snapshot + 短 replay
   - 更细粒度 timing 口径统一
+- 已把 `ROSA_在线主线重构_TODO.md` 主表补成显式状态列：
+  - `已完成`：10 项
+  - `进行中`：2 项
+  - `未开始`：9 项
 - 地址异步预取结论：当前 `8/4/4` 小实验里，在不启用训练地址缓存的情况下：
   - `step ~103.3ms -> ~69.1ms`
   - `timing_model_rosa_address_ms ~44.7ms -> ~0.5ms`
