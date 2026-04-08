@@ -10,6 +10,7 @@ import torch
 
 import profile_rosa_online_baseline as profile_mod
 import train_qwen_llama_vs_rosa_v2 as rosa_mod
+from rosa_train_async import maybe_wrap_train_address_prefetch
 from rosa_recipes import apply_rosa_recipe
 
 
@@ -278,6 +279,24 @@ def run_training_entry(args, context: SweepTrainingContext, layer_ids: Sequence[
         train_seed=args.seed,
     )
     model = build_rosa_model(args, context.tokenizer, layer_ids)
+    train_loader = maybe_wrap_train_address_prefetch(
+        train_loader,
+        address_engine=model.address_engine,
+        enabled=(args.rosa_train_mode == "online_seq" and not getattr(args, "disable_rosa_train_address_async", False)),
+        max_workers=getattr(args, "rosa_train_address_async_workers", 1),
+    )
+    val_loader = maybe_wrap_train_address_prefetch(
+        val_loader,
+        address_engine=model.address_engine,
+        enabled=(args.rosa_train_mode == "online_seq" and not getattr(args, "disable_rosa_train_address_async", False)),
+        max_workers=getattr(args, "rosa_train_address_async_workers", 1),
+    )
+    test_loader = maybe_wrap_train_address_prefetch(
+        test_loader,
+        address_engine=model.address_engine,
+        enabled=(args.rosa_train_mode == "online_seq" and not getattr(args, "disable_rosa_train_address_async", False)),
+        max_workers=getattr(args, "rosa_train_address_async_workers", 1),
+    )
     param_count = rosa_mod.count_params(model)
     history = rosa_mod.train_one_model(
         model,

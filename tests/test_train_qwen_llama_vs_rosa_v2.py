@@ -735,6 +735,103 @@ class TrainingTimingTests(unittest.TestCase):
         self.assertGreater(val_row["timing_eval_forward_ms"], 0.0)
 
 
+class TrainAddressAsyncLoaderTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+        docs_tokens = [
+            [1, 2, 1, 2, 3, 4],
+            [5, 6, 5, 6, 7, 8],
+        ]
+        self.dataset = rosa_mod.DocChunkDataset(
+            docs_tokens,
+            seq_len=4,
+            pad_id=0,
+            stride=4,
+            rosa_memory_tokens=8,
+            full_doc_memory=True,
+        )
+
+    def test_async_loader_prepares_online_seq_addresses_before_forward(self):
+        loader, _, _ = rosa_mod.build_dataloaders(
+            self.dataset,
+            self.dataset,
+            self.dataset,
+            batch_size=2,
+            pad_id=0,
+            train_seed=2026,
+        )
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=1,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=False,
+        )
+        wrapped = rosa_mod.maybe_wrap_train_address_prefetch(
+            loader,
+            address_engine=model.address_engine,
+            enabled=True,
+            max_workers=1,
+        )
+        batch = next(iter(wrapped))
+        direct = model.compute_rosa_address_batch(
+            batch["input_ids"],
+            rosa_memory_ids=batch["rosa_memory_ids"],
+        )
+        self.assertTrue(torch.equal(batch["rosa_precomputed_ids"], direct.addr_ids))
+        self.assertTrue(torch.equal(batch["rosa_precomputed_match_lens"], direct.fired_match_lens))
+        self.assertTrue(torch.equal(batch["rosa_precomputed_raw_best_lens"], direct.raw_match_lens))
+        self.assertEqual(batch["rosa_precomputed_source"], "seq:online_sam")
+
+    def test_async_loader_allows_model_forward_without_sequence_address_call(self):
+        loader, _, _ = rosa_mod.build_dataloaders(
+            self.dataset,
+            self.dataset,
+            self.dataset,
+            batch_size=2,
+            pad_id=0,
+            train_seed=2026,
+        )
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=1,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=False,
+        )
+        wrapped = rosa_mod.maybe_wrap_train_address_prefetch(
+            loader,
+            address_engine=model.address_engine,
+            enabled=True,
+            max_workers=1,
+        )
+        batch = next(iter(wrapped))
+        labels = rosa_mod.labels_with_ignore(batch["labels"], 0)
+        with mock.patch.object(model.address_engine, "forward_seq", wraps=model.address_engine.forward_seq) as forward_seq:
+            out = model(
+                input_ids=batch["input_ids"],
+                labels=labels,
+                rosa_memory_ids=batch["rosa_memory_ids"],
+                rosa_precomputed_ids=batch["rosa_precomputed_ids"],
+                rosa_precomputed_match_lens=batch["rosa_precomputed_match_lens"],
+                rosa_precomputed_raw_best_lens=batch["rosa_precomputed_raw_best_lens"],
+                rosa_precomputed_source=batch["rosa_precomputed_source"],
+            )
+        self.assertEqual(forward_seq.call_count, 0)
+        self.assertEqual(out["rosa_address_source_online_seq"], 1.0)
+        self.assertTrue(torch.isfinite(out["loss"]))
+
+
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
         docs = [[1, 2, 1, 2, 3]]

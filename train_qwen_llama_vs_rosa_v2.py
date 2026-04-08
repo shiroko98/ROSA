@@ -40,6 +40,7 @@ from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 from rosa_session import RosaBatchSession
 from rosa_timing import TimingCollector
+from rosa_train_async import maybe_wrap_train_address_prefetch
 from rosa_training_cache import build_sequence_online_precomputed_rosa
 
 try:
@@ -2068,6 +2069,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="显式开启 online_seq 训练地址缓存；会在数据集构建期预先缓存整文档 sequence 地址。默认关闭。")
     parser.add_argument("--disable_rosa_train_address_cache", action="store_true",
                         help="兼容旧命令行保留；当前训练地址缓存默认已关闭。")
+    parser.add_argument("--disable_rosa_train_address_async", action="store_true",
+                        help="关闭训练期 online_seq 地址异步预取；默认会在主干训练当前 batch 时，由 CPU 后台准备下一 batch 地址。")
+    parser.add_argument("--rosa_train_address_async_workers", type=int, default=1,
+                        help="训练期地址异步预取使用的后台 worker 数。")
     parser.add_argument("--rosa_recipe", type=str, default="custom",
                         choices=available_rosa_recipe_names(),
                         help="应用一个 ROSA 预设配方。online_v1 会固定 shared value、online_sam、单早层与 context gate。")
@@ -2187,6 +2192,7 @@ def main():
     print(f"ROSA context gate: {args.rosa_context_gate}")
     print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     print(f"训练 timing: {args.train_timing}")
+    print(f"ROSA train address async: {not args.disable_rosa_train_address_async}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     if recipe_meta["applied"]:
         print(f"ROSA recipe detail: {recipe_meta['description']}")
@@ -2311,8 +2317,26 @@ def main():
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
     )
+    rosa_train_loader = maybe_wrap_train_address_prefetch(
+        train_loader,
+        address_engine=rosa_model.address_engine,
+        enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
+        max_workers=args.rosa_train_address_async_workers,
+    )
+    rosa_val_loader = maybe_wrap_train_address_prefetch(
+        val_loader,
+        address_engine=rosa_model.address_engine,
+        enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
+        max_workers=args.rosa_train_address_async_workers,
+    )
+    rosa_test_loader = maybe_wrap_train_address_prefetch(
+        test_loader,
+        address_engine=rosa_model.address_engine,
+        enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
+        max_workers=args.rosa_train_address_async_workers,
+    )
     rosa_hist = train_one_model(
-        rosa_model, train_loader, val_loader, device,
+        rosa_model, rosa_train_loader, rosa_val_loader, device,
         pad_id=tokenizer.pad_token_id,
         epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
         grad_clip=args.grad_clip, use_bf16=args.bf16,
@@ -2320,7 +2344,7 @@ def main():
     )
     rosa_test = evaluate(
         rosa_model.to(device),
-        test_loader,
+        rosa_test_loader,
         device,
         tokenizer.pad_token_id,
         collect_timing=args.train_timing,
@@ -2351,6 +2375,9 @@ def main():
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
             "seq_address_mode": args.rosa_seq_address_mode,
+            "train_address_async": (args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
+            "train_address_async_workers": args.rosa_train_address_async_workers,
+            "train_address_cache": (args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
             "context_gate": args.rosa_context_gate,
             "hot_cache_size": args.rosa_hot_cache_size,
             "train_timing": args.train_timing,

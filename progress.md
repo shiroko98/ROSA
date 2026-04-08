@@ -159,6 +159,14 @@
   - 训练前向复用缓存，不再每个 chunk 重放整段 `full doc prefix`
 - 新增开关：`--enable_rosa_train_address_cache`
 - 当前默认：训练地址缓存已关闭，在线主线重新回到逐 batch 在线构建；缓存仅作为可选对照/应急开关保留
+- 新增 `rosa_train_async.py`
+- 训练主线现支持“地址异步预取”：
+  - 当前 batch 在 GPU 上训练时
+  - CPU 后台线程预先为下一 batch 计算 `online_seq` 地址
+  - 产出 `rosa_precomputed_*` 临时字段，但不落盘、不持久缓存整数据集
+- 新增开关：
+  - `--disable_rosa_train_address_async`
+  - `--rosa_train_address_async_workers`
 - `profile_rosa_online_baseline.py` 与 `rosa_layer_sweep.py` 已同步支持该开关，并兼容 cached online_seq 数据集
 
 ## 自我验证记录
@@ -186,6 +194,8 @@
 - `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_seq_address_mode online_sam --train_timing`（训练地址缓存开启）
 - `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_seq_address_mode online_sam --disable_rosa_train_address_cache --train_timing`（训练地址缓存关闭）
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_sam`（cached train-path smoke）
+- `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_seq_address_mode online_sam --disable_rosa_train_address_async --train_timing`（同步地址）
+- `conda run -n model python train_qwen_llama_vs_rosa_v2.py ... --rosa_seq_address_mode online_sam --train_timing`（异步地址）
 - 结果：本次改动相关的 targeted tests 已通过，`profile` smoke 也已通过；`unittest discover -s tests` 在当前 Windows 环境下仍会遇到独立的 tempfile 权限噪声，需要与本次代码逻辑问题区分看待。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
@@ -239,6 +249,11 @@
   - 在线 SAM sequence 路径的高性能实现
   - memory window / bookmark
   - 状态快照 / chunk 起点恢复
+- 地址异步预取结论：当前 `8/4/4` 小实验里，在不启用训练地址缓存的情况下：
+  - `step ~103.3ms -> ~69.1ms`
+  - `timing_model_rosa_address_ms ~44.7ms -> ~0.5ms`
+  - test 指标保持一致
+  - 这是目前更适合保留为默认主线的训练加速方式
 
 ## 备注
 

@@ -11,6 +11,7 @@
 - 当前状态：已完成在线主线 `P1-3`、`P1-2`、`P1-4`、`P1-1` 与 `P1-5`；suffix automaton state、统一 session 生命周期、prefetch/cache 主线、在线训练 V1 配方和统一层位 sweep 协议都已接入
 - 当前补充优化：已完成在线训练地址缓存，将 `online_seq + online_exact/online_sam` 的训练期地址构建前移到数据集阶段，优先缓解 `model_rosa_address` 瓶颈
 - 当前策略调整：训练地址缓存不再作为默认主路径，后续以“异步地址支路 + 高性能 SAM sequence 实现”为优先优化方向
+- 当前进展：训练地址异步预取已落地，可在不持久缓存整数据集的前提下，把 `online_seq` 地址准备与 GPU 主干训练做 overlap
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”

@@ -82,6 +82,8 @@ git log --oneline -5
   - `doc_local` / `global_train` 在线模式默认提供 `full doc prefix` 左侧 memory，用于和旧 reference 路径对齐
   - 对 `online_exact` / `online_sam`，当前训练阶段默认回到逐 batch 在线构建地址
   - 如需显式启用“训练地址缓存”，可加：`--enable_rosa_train_address_cache`
+  - 当前训练默认会开启“地址异步预取”：主干训练当前 batch 时，CPU 后台准备下一 batch 的在线地址
+  - 如需关闭，可加：`--disable_rosa_train_address_async`
   - 训练 / 评测输出里可直接看地址来源统计：
     - `rosa_address_source_precomputed`
     - `rosa_address_source_online_seq`
@@ -223,6 +225,10 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - 关闭训练地址缓存：`rosa_addr ~85.1ms`，`step ~133.5ms`
   - 开启训练地址缓存：`rosa_addr ~0.2ms`，`step ~56.9ms`
   - 说明当前最有效的训练加速手段，是把在线 sequence 地址从“每个 chunk 前向重放”改成“数据集构建期缓存”
+- 当前一次 `8/4/4` 小实验对比（训练地址异步预取，缓存关闭）：
+  - 同步地址：`rosa_addr ~44.7ms`，`step ~103.3ms`
+  - 异步地址：`rosa_addr ~0.5ms`，`step ~69.1ms`
+  - 说明当前更适合作为主线的加速方案，是“next-batch 地址异步预取”，而不是默认整数据集缓存
 
 ## VS Code Launch
 
