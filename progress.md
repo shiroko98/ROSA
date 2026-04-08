@@ -23,6 +23,7 @@
 - [x] 在线主线 Task-1: `AddressEngine.forward_seq()`
 - [x] 在线主线 P0-1: 旧路径退位为 `reference/fallback`
 - [x] 在线主线 P0-4: 训练前向接入 `forward_seq()`
+- [x] 在线主线 P0-5: 在线训练 vs reference 预计算一致性回归
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -94,6 +95,10 @@
   - 会实际调用 `AddressEngine.forward_seq()`
   - `loss.backward()` 可正常反传
   - `train_one_model()` 可稳定完成一轮训练
+- `profile_rosa_online_baseline.py` 现已输出 `train_path_consistency` 报告段，用于比较：
+  - `online_seq` chunk 训练路径
+  - `reference_precompute` chunk 训练路径
+- 当前 smoke 结果：`train path address agreement = 1.0`，`train path logit diff = 0.0`
 
 ## 自我验证记录
 
@@ -110,11 +115,13 @@
 - `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_exact`（在线主线 Task-1 smoke）
 - `conda run -n model python -m unittest tests.test_train_qwen_llama_vs_rosa_v2`（在线主线 P0-1 入口切换）
 - `conda run -n model python -m unittest tests.test_train_qwen_llama_vs_rosa_v2`（在线主线 P0-4 前向/反传 smoke）
-- 结果：共 40 个测试，全部通过；P1 六项任务均已落地，在线主线 Task-1 也已完成。
+- `conda run -n model python profile_rosa_online_baseline.py ... --train_consistency_samples 4`（在线主线 P0-5 一致性 smoke）
+- 结果：共 43 个测试，全部通过；在线主线 P0 已全部完成。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
 - 训练入口切换结论：当前默认训练主线已不再依赖 `rosa_precomputed_ids`；reference 预计算路径仍可通过显式 `train_mode` 单独回归。
 - 在线训练前向结论：当前 teacher forcing 主训练前向在不传 precomputed 地址时，会稳定走 `forward_seq()` 并支持正常反传。
+- 一致性回归结论：当前 `online_seq` 训练样本地址路径与 `reference_precompute` 逐位置完全对齐，logits 也保持数值一致。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
@@ -124,6 +131,7 @@
   - `outputs/scan_p1_layers_smoke/layer_scan_report.json`
   - `outputs/profile_p1_hot_cache_on/profile_report.json`
   - `outputs/profile_p1_hot_cache_on_m1/profile_report.json`
+  - `outputs/profile_p0_train_path_consistency/profile_report.json`
 
 ## 下一步
 
@@ -133,8 +141,7 @@
 - 已在在线主线 TODO 中补充：
   - `ROSA-DocMemory`：外部检索文档作为 side memory
   - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
-- 下一步优先验证新的在线训练主线：`teacher forcing 并行主干 + AddressEngine.forward_seq() + 在线 side-branch 注入`。
-- 下一步优先做在线训练地址与 `reference_precompute` 的逐位置一致性回归，并补 smoke 报告。
+- 下一步可以正式进入在线主线 P1，优先实现真正的 suffix automaton state 与统一的 prefill/decode `RosaState` 生命周期。
 
 ## 备注
 

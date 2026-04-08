@@ -27,6 +27,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--warmup_iters", type=int, default=1)
     parser.add_argument("--measure_iters", type=int, default=3)
+    parser.add_argument("--train_consistency_samples", type=int, default=8)
+    parser.add_argument("--train_consistency_stride", type=int, default=None)
     parser.add_argument("--device", type=str, default=None, help="cpu/cuda；为空时自动选择。")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--arch_style", type=str, default="qwen", choices=["llama", "qwen"])
@@ -191,11 +193,8 @@ def maybe_load_checkpoint(model: torch.nn.Module, path: Optional[str]) -> None:
     model.load_state_dict(state_dict)
 
 
-def build_models(args, tokenizer, device: torch.device):
+def build_rosa_model(args, tokenizer, device: torch.device, *, seq_address_mode: Optional[str] = None):
     cfg = rosa_mod.build_model_config(args, tokenizer)
-
-    rosa_mod.set_seed(args.seed)
-    baseline = rosa_mod.BaseLM(cfg)
     rosa_mod.set_seed(args.seed)
     rosa_model = rosa_mod.RosaFusedLM(
         cfg,
@@ -206,20 +205,190 @@ def build_models(args, tokenizer, device: torch.device):
         inject_layer_ids=rosa_mod.parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
-        rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_seq_address_mode=seq_address_mode or args.rosa_seq_address_mode,
         use_context_gate=args.rosa_context_gate,
         rosa_hot_cache_size=args.rosa_hot_cache_size,
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         use_match_len_gate=not args.rosa_disable_match_len_gate,
     )
+    maybe_load_checkpoint(rosa_model, args.rosa_ckpt)
+    return rosa_model.to(device).eval()
+
+
+def build_models(args, tokenizer, device: torch.device):
+    cfg = rosa_mod.build_model_config(args, tokenizer)
+
+    rosa_mod.set_seed(args.seed)
+    baseline = rosa_mod.BaseLM(cfg)
+    rosa_model = build_rosa_model(args, tokenizer, device)
 
     maybe_load_checkpoint(baseline, args.baseline_ckpt)
-    maybe_load_checkpoint(rosa_model, args.rosa_ckpt)
 
     baseline.to(device).eval()
-    rosa_model.to(device).eval()
     return baseline, rosa_model
+
+
+def address_batch_to_dict(address_batch) -> Dict[str, torch.Tensor]:
+    if isinstance(address_batch, dict):
+        return {
+            "addr_ids": address_batch["addr_ids"],
+            "raw_match_lens": address_batch["raw_match_lens"],
+            "fired_match_lens": address_batch["fired_match_lens"],
+            "valid_mask": address_batch["valid_mask"],
+            "special_mask": address_batch["special_mask"],
+        }
+    return {
+        "addr_ids": address_batch.addr_ids,
+        "raw_match_lens": address_batch.raw_match_lens,
+        "fired_match_lens": address_batch.fired_match_lens,
+        "valid_mask": address_batch.valid_mask,
+        "special_mask": address_batch.special_mask,
+    }
+
+
+def run_train_path_consistency_profile(
+    args,
+    tokenizer,
+    docs_tokens: Sequence[Sequence[int]],
+    *,
+    device: torch.device,
+) -> Dict[str, Any]:
+    if args.rosa_backend != "sam":
+        return {
+            "enabled": False,
+            "reason": "train_path_consistency 仅在 sam backend 下支持 reference_precompute 对照。",
+        }
+
+    stride = args.train_consistency_stride or args.seq_len
+    sample_cap = max(1, args.train_consistency_samples)
+    online_ds, _, _, online_meta = rosa_mod.build_chunk_datasets(
+        docs_tokens,
+        docs_tokens,
+        docs_tokens,
+        seq_len=args.seq_len,
+        pad_id=tokenizer.pad_token_id,
+        stride=stride,
+        rosa_memory_tokens=args.prefill_tokens,
+        rosa_memory_mode="doc_local",
+        rosa_global_memory_tokens=0,
+        rosa_backend=args.rosa_backend,
+        rosa_train_mode="online_seq",
+        rosa_min_match_len=args.rosa_min_match_len,
+        special_ids=tokenizer.special_ids,
+        forbid_special_target=not args.rosa_allow_special_target,
+    )
+    reference_ds, _, _, reference_meta = rosa_mod.build_chunk_datasets(
+        docs_tokens,
+        docs_tokens,
+        docs_tokens,
+        seq_len=args.seq_len,
+        pad_id=tokenizer.pad_token_id,
+        stride=stride,
+        rosa_memory_tokens=args.prefill_tokens,
+        rosa_memory_mode="doc_local",
+        rosa_global_memory_tokens=0,
+        rosa_backend=args.rosa_backend,
+        rosa_train_mode="reference_precompute",
+        rosa_min_match_len=args.rosa_min_match_len,
+        special_ids=tokenizer.special_ids,
+        forbid_special_target=not args.rosa_allow_special_target,
+    )
+    if len(online_ds) != len(reference_ds):
+        raise ValueError(
+            f"在线训练数据集与 reference_precompute 数据集样本数不一致: {len(online_ds)} vs {len(reference_ds)}"
+        )
+
+    collate = rosa_mod.make_collate_fn(tokenizer.pad_token_id)
+    online_model = build_rosa_model(args, tokenizer, device, seq_address_mode="online_exact")
+    reference_model = build_rosa_model(args, tokenizer, device, seq_address_mode="online_exact")
+
+    address_cmp_rows: List[Dict[str, float]] = []
+    coverage_rows: List[Dict[str, float]] = []
+    online_stats_rows: List[Dict[str, float]] = []
+    reference_stats_rows: List[Dict[str, float]] = []
+    logit_diffs: List[float] = []
+    loss_diffs: List[float] = []
+
+    for start in range(0, min(len(online_ds), sample_cap), max(1, args.batch_size)):
+        stop = min(start + max(1, args.batch_size), min(len(online_ds), sample_cap))
+        online_batch_cpu = collate([online_ds[idx] for idx in range(start, stop)])
+        reference_batch_cpu = collate([reference_ds[idx] for idx in range(start, stop)])
+
+        if not torch.equal(online_batch_cpu["input_ids"], reference_batch_cpu["input_ids"]):
+            raise ValueError("online_seq 与 reference_precompute 的 input_ids 不一致。")
+        if not torch.equal(online_batch_cpu["labels"], reference_batch_cpu["labels"]):
+            raise ValueError("online_seq 与 reference_precompute 的 labels 不一致。")
+
+        input_ids = online_batch_cpu["input_ids"].to(device)
+        labels = online_batch_cpu["labels"].to(device)
+        online_mem = online_batch_cpu["rosa_memory_ids"].to(device)
+        reference_mem = reference_batch_cpu["rosa_memory_ids"].to(device)
+        reference_pre_ids = reference_batch_cpu["rosa_precomputed_ids"].to(device)
+        reference_pre_match = reference_batch_cpu["rosa_precomputed_match_lens"].to(device)
+        reference_pre_raw = reference_batch_cpu["rosa_precomputed_raw_best_lens"].to(device)
+
+        with torch.no_grad():
+            online_address = online_model.compute_rosa_address_batch(
+                input_ids,
+                rosa_memory_ids=online_mem,
+            )
+            reference_address = reference_model.compute_rosa_address_batch(
+                input_ids,
+                rosa_memory_ids=reference_mem,
+                rosa_precomputed_ids=reference_pre_ids,
+                rosa_precomputed_match_lens=reference_pre_match,
+                rosa_precomputed_raw_best_lens=reference_pre_raw,
+            )
+            online_out = online_model(
+                input_ids=input_ids,
+                labels=labels,
+                rosa_memory_ids=online_mem,
+            )
+            reference_out = reference_model(
+                input_ids=input_ids,
+                labels=labels,
+                rosa_memory_ids=reference_mem,
+                rosa_precomputed_ids=reference_pre_ids,
+                rosa_precomputed_match_lens=reference_pre_match,
+                rosa_precomputed_raw_best_lens=reference_pre_raw,
+            )
+
+        reference_dict = address_batch_to_dict(reference_address)
+        online_dict = address_batch_to_dict(online_address)
+        address_cmp_rows.append(compare_tensor_dicts(reference_dict, online_dict))
+        coverage_rows.append(summarize_address_tensors(reference_dict))
+        online_stats_rows.append(extract_scalar_rosa_stats(online_out))
+        reference_stats_rows.append(extract_scalar_rosa_stats(reference_out))
+        logit_diffs.append(torch.max(torch.abs(reference_out["logits"] - online_out["logits"])).item())
+        loss_diffs.append(abs(float(reference_out["loss"].item()) - float(online_out["loss"].item())))
+
+    return {
+        "enabled": True,
+        "samples_compared": min(len(online_ds), sample_cap),
+        "online_memory_meta": online_meta,
+        "reference_memory_meta": reference_meta,
+        "correctness": {
+            "address_agreement": {
+                key: average_metric(address_cmp_rows, key)
+                for key in (address_cmp_rows[0].keys() if address_cmp_rows else [])
+            },
+            "logit_max_abs_diff": max(logit_diffs) if logit_diffs else 0.0,
+            "loss_max_abs_diff": max(loss_diffs) if loss_diffs else 0.0,
+        },
+        "coverage": {
+            key: average_metric(coverage_rows, key)
+            for key in (coverage_rows[0].keys() if coverage_rows else [])
+        },
+        "online_model_stats": {
+            key: average_metric(online_stats_rows, key)
+            for key in (online_stats_rows[0].keys() if online_stats_rows else [])
+        },
+        "reference_model_stats": {
+            key: average_metric(reference_stats_rows, key)
+            for key in (reference_stats_rows[0].keys() if reference_stats_rows else [])
+        },
+    }
 
 
 def bench_callable(fn, *, warmup_iters: int, measure_iters: int, device: torch.device):
@@ -605,6 +774,12 @@ def build_report(args) -> Dict[str, Any]:
         use_pinned_prefetch=args.rosa_prefetch_pinned,
     )
     decode_hot_cache_report = rosa_model.get_hot_cache_stats(top_k=5)
+    train_path_report = run_train_path_consistency_profile(
+        args,
+        tokenizer,
+        docs_tokens,
+        device=device,
+    )
 
     report = {
         "meta": {
@@ -619,6 +794,8 @@ def build_report(args) -> Dict[str, Any]:
             "decode_steps": args.decode_steps,
             "warmup_iters": args.warmup_iters,
             "measure_iters": args.measure_iters,
+            "train_consistency_samples": args.train_consistency_samples,
+            "train_consistency_stride": args.train_consistency_stride or args.seq_len,
             "baseline_ckpt": args.baseline_ckpt,
             "rosa_ckpt": args.rosa_ckpt,
             "rosa_backend": args.rosa_backend,
@@ -635,6 +812,7 @@ def build_report(args) -> Dict[str, Any]:
         },
         "prefill": prefill_report,
         "decode_micro": decode_report,
+        "train_path_consistency": train_path_report,
         "hot_cache": {
             "enabled": bool(prefill_hot_cache_report.get("enabled") or decode_hot_cache_report.get("enabled")),
             "prefill": prefill_hot_cache_report,
@@ -655,6 +833,12 @@ def build_report(args) -> Dict[str, Any]:
         "prefill_hot_cache_unique_hit_rate": float(prefill_hot_cache_report.get("unique_hit_rate", 0.0)),
         "decode_hot_cache_token_hit_rate": float(decode_hot_cache_report.get("token_hit_rate", 0.0)),
         "decode_hot_cache_unique_hit_rate": float(decode_hot_cache_report.get("unique_hit_rate", 0.0)),
+        "train_path_address_agreement": float(
+            train_path_report.get("correctness", {}).get("address_agreement", {}).get("all_equal", 0.0)
+        ),
+        "train_path_logit_max_abs_diff": float(
+            train_path_report.get("correctness", {}).get("logit_max_abs_diff", 0.0)
+        ),
     }
 
     save_json(report, out_dir / "profile_report.json")
@@ -679,6 +863,14 @@ def print_summary(report: Dict[str, Any]) -> None:
             report["decode_micro"]["timings"]["rosa_online"]["avg_ms"],
         )
     )
+    train_path = report.get("train_path_consistency", {})
+    if train_path.get("enabled"):
+        print(
+            "train path | address agreement {0:.4f} | logit diff {1:.6f}".format(
+                train_path["correctness"]["address_agreement"].get("all_equal", 0.0),
+                train_path["correctness"]["logit_max_abs_diff"],
+            )
+        )
     print(
         "address agreement | prefill {0:.4f} | decode {1:.4f}".format(
             report["prefill"]["correctness"]["address_agreement"].get("all_equal", 0.0),

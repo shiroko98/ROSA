@@ -119,6 +119,9 @@ git log --oneline -5
   - `baseline`
   - `rosa_reference`
   - `rosa_online`
+- 当前还会额外输出：
+  - `train_path_consistency`
+  - 用于比较 `online_seq` 训练样本路径和 `reference_precompute` 训练样本路径的地址一致性与 logit diff
 - 当启用热点缓存时，报告还会包含：
   - `hot_cache.prefill`
   - `hot_cache.decode_micro`
