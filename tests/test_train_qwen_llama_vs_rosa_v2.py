@@ -456,6 +456,46 @@ class RosaSequenceAddressModeTests(unittest.TestCase):
         self.assertTrue(torch.equal(reference_batch.valid_mask, online_batch.valid_mask))
         self.assertTrue(torch.equal(reference_batch.special_mask, online_batch.special_mask))
 
+    def test_model_online_sam_address_mode_matches_reference_backend(self):
+        input_ids = torch.tensor([[1, 2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        rosa_mod.set_seed(6262)
+        reference_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="reference_backend",
+        )
+        rosa_mod.set_seed(6262)
+        online_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+        )
+
+        reference_batch = reference_model.compute_rosa_address_batch(
+            input_ids,
+            rosa_memory_ids=memory_ids,
+        )
+        online_batch = online_model.compute_rosa_address_batch(
+            input_ids,
+            rosa_memory_ids=memory_ids,
+        )
+        with torch.no_grad():
+            reference_out = reference_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+            online_out = online_model(input_ids=input_ids, rosa_memory_ids=memory_ids)
+
+        self.assertTrue(torch.equal(reference_batch.addr_ids, online_batch.addr_ids))
+        self.assertTrue(torch.equal(reference_batch.raw_match_lens, online_batch.raw_match_lens))
+        self.assertTrue(torch.equal(reference_batch.fired_match_lens, online_batch.fired_match_lens))
+        self.assertTrue(torch.equal(reference_batch.valid_mask, online_batch.valid_mask))
+        self.assertTrue(torch.equal(reference_batch.special_mask, online_batch.special_mask))
+        self.assertTrue(torch.allclose(reference_out["logits"], online_out["logits"], atol=1e-6))
+
 
 class RosaOnlineTrainingForwardTests(unittest.TestCase):
     def setUp(self):

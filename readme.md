@@ -5,6 +5,7 @@
 - Conda 环境：`model`
 - 主训练脚本：`train_qwen_llama_vs_rosa_v2.py`
 - 主测试入口：`tests/test_train_qwen_llama_vs_rosa_v2.py`
+- 地址/状态模块：`rosa_addressing.py`
 
 ## 常用命令
 
@@ -59,11 +60,13 @@ git log --oneline -5
 - 当前支持两种 sequence 模式：
   - `--rosa_seq_address_mode reference_backend`
   - `--rosa_seq_address_mode online_exact`
+  - `--rosa_seq_address_mode online_sam`
 - 含义：
   - `online_seq`：新的训练主线，数据集默认只提供 `input_ids / labels / optional_memory`，由前向内部调用 `AddressEngine.forward_seq()`
   - `reference_precompute`：保留旧的 `doc_local + sam precompute` 回归路径
   - `reference_backend`：继续走现有整段 reference 地址逻辑
   - `online_exact`：按左上下文顺序扫描整段，生成 `[B, T]` 地址结果
+  - `online_sam`：使用真正的在线 suffix automaton state 生成整段/逐步地址
 - 当前用途：
   - 作为在线训练主线的第一版统一入口
   - 当前训练默认已切到 `online_seq + online_exact`
@@ -73,6 +76,7 @@ git log --oneline -5
     - `rosa_address_source_online_seq`
     - `rosa_address_source_reference_seq`
     - `rosa_address_source_online_step`
+  - 当前 `OnlineRosaState` 已切到真正的在线 SAM 状态；旧 list-state 以 `ExactMatchRosaState` 保留作 fallback/reference
 
 ## Prefetch / Staging
 

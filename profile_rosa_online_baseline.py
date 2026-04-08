@@ -46,7 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_scale", type=float, default=0.15)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
-                        choices=["reference_backend", "online_exact"])
+                        choices=["reference_backend", "online_exact", "online_sam"])
     parser.add_argument("--rosa_context_gate", action="store_true")
     parser.add_argument("--rosa_hot_cache_size", type=int, default=0)
     parser.add_argument("--rosa_prefetch", action="store_true")

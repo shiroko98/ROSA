@@ -24,6 +24,7 @@
 - [x] 在线主线 P0-1: 旧路径退位为 `reference/fallback`
 - [x] 在线主线 P0-4: 训练前向接入 `forward_seq()`
 - [x] 在线主线 P0-5: 在线训练 vs reference 预计算一致性回归
+- [x] 在线主线 P1-3: 用真正的 suffix automaton state 替换 list-state
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -67,6 +68,7 @@
 - 新增 `--rosa_hot_cache_size`
 - 新增 `RosaHotAddressCache`
 - 新增 `RosaAddressEngine`
+- 新增 `rosa_addressing.py`
 - 新增 `--rosa_seq_address_mode reference_backend|online_exact`
 - 新增 `--rosa_train_mode online_seq|reference_precompute`
 - profiling 报告输出 `profile_report.json`，包含：
@@ -99,6 +101,12 @@
   - `online_seq` chunk 训练路径
   - `reference_precompute` chunk 训练路径
 - 当前 smoke 结果：`train path address agreement = 1.0`，`train path logit diff = 0.0`
+- 地址/状态逻辑现已从主训练脚本拆到 `rosa_addressing.py`，主训练脚本只保留模型与训练入口。
+- `OnlineRosaState` 已切到真正的 suffix automaton 实现；旧 reference 级 list-state 保留为 `ExactMatchRosaState`。
+- 新增 `online_sam` sequence mode，并补了：
+  - `forward_seq()` 对齐 reference backend
+  - `forward_step()` 对齐 `forward_seq()`
+  - `RosaFusedLM(rosa_seq_address_mode=\"online_sam\")` logits 对齐
 
 ## 自我验证记录
 
@@ -116,12 +124,14 @@
 - `conda run -n model python -m unittest tests.test_train_qwen_llama_vs_rosa_v2`（在线主线 P0-1 入口切换）
 - `conda run -n model python -m unittest tests.test_train_qwen_llama_vs_rosa_v2`（在线主线 P0-4 前向/反传 smoke）
 - `conda run -n model python profile_rosa_online_baseline.py ... --train_consistency_samples 4`（在线主线 P0-5 一致性 smoke）
-- 结果：共 43 个测试，全部通过；在线主线 P0 已全部完成。
+- `conda run -n model python profile_rosa_online_baseline.py ... --rosa_seq_address_mode online_sam`（在线主线 P1-3 smoke）
+- 结果：共 47 个测试，全部通过；在线主线 P0 已全部完成，P1-3 也已落地。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
 - 训练入口切换结论：当前默认训练主线已不再依赖 `rosa_precomputed_ids`；reference 预计算路径仍可通过显式 `train_mode` 单独回归。
 - 在线训练前向结论：当前 teacher forcing 主训练前向在不传 precomputed 地址时，会稳定走 `forward_seq()` 并支持正常反传。
 - 一致性回归结论：当前 `online_seq` 训练样本地址路径与 `reference_precompute` 逐位置完全对齐，logits 也保持数值一致。
+- 在线 SAM 结论：当前 `online_sam` 的 prefill/step 路径已与 reference backend 对齐，可作为后续统一 prefill/decode 生命周期的主状态结构。
 - 参考报告：
   - `outputs/profile_qwen_online_baseline_smoke/profile_report.json`
   - `outputs/profile_smoke_online_baseline_postpatch/profile_report.json`
@@ -132,6 +142,7 @@
   - `outputs/profile_p1_hot_cache_on/profile_report.json`
   - `outputs/profile_p1_hot_cache_on_m1/profile_report.json`
   - `outputs/profile_p0_train_path_consistency/profile_report.json`
+  - `outputs/profile_p1_online_sam_smoke/profile_report.json`
 
 ## 下一步
 
@@ -141,7 +152,7 @@
 - 已在在线主线 TODO 中补充：
   - `ROSA-DocMemory`：外部检索文档作为 side memory
   - `ROSA × Engram`：文档 memory 与参数化 memory 的 hybrid 路线
-- 下一步可以正式进入在线主线 P1，优先实现真正的 suffix automaton state 与统一的 prefill/decode `RosaState` 生命周期。
+- 下一步优先实现统一推理 session，把 `prefill + decode` 共用 `RosaState` 生命周期正式接起来，再把 prefetch / staging / hot cache 挂到这条主线上。
 
 ## 备注
 

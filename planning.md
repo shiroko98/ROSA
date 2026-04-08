@@ -8,7 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
-- 当前状态：P0 已全部完成；当前在线主线已经具备默认 `online_seq` 训练入口、`forward_seq()` 训练前向和训练形态一致性回归
+- 当前状态：已完成在线主线 `P1-3`；真正的 suffix automaton state 已接入独立模块，下一步准备统一 prefill/decode session 生命周期
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -66,14 +66,24 @@
 - 当前 smoke 结果显示：
   - `train path address agreement = 1.0`
   - `train path logit diff = 0.0`
+- 已新增独立模块 `rosa_addressing.py`，承载：
+  - 地址元数据
+  - reference/fallback 地址实现
+  - `RosaAddressEngine`
+  - 真正的在线 suffix automaton state
+- `OnlineRosaState` 现在已切到 SAM 状态结构；旧的 list-state 以 `ExactMatchRosaState` 形式保留为 fallback/reference。
+- 已新增 `online_sam` sequence mode，并通过单测与 profiling smoke 验证：
+  - `forward_seq()` 与 reference backend 地址结果逐位置一致
+  - `forward_step()` 与 `forward_seq()` 在 memory prefill 后保持一致
+  - `logit diff = 0.0`
 - 已在 `model` 环境执行 `python -m unittest discover -s tests`，当前通过。
 
 ## 下一任务
 
-1. 进入在线主线 `P1`，优先做真正的 suffix automaton state，替换当前 reference 级 list-state。
-2. 让推理期 `prefill + decode` 共用更正式的 `RosaState` 生命周期。
-3. 中期按新 TODO 接入 `ROSA-DocMemory`，让外部检索文档可作为 side memory。
-4. 再进一步规划 `ROSA × Engram` 的 hybrid memory 方案。
+1. 实现统一推理 session，让 `prefill + decode` 共用更正式的 `RosaState` 生命周期。
+2. 在新 session 上接通 prefetch / staging / hot cache 主线。
+3. 固化在线训练 V1 配方与小样本实验入口。
+4. 最后补统一训练/推理注入层 sweep 协议。
 
 ## 自我验证清单
 
