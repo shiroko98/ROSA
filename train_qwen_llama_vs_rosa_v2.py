@@ -2015,9 +2015,14 @@ class RosaFusedLM(BaseLM):
         x = self.norm(x)
 
         raw_has_match = raw_best_lens.gt(0)
+        address_source = rosa_payload.address.source
         stats = {
             "rosa_value_per_layer": 1.0 if self.rosa_value_store.is_per_layer else 0.0,
             "rosa_inject_slots": float(self.inject_layers),
+            "rosa_address_source_precomputed": 1.0 if address_source == "precomputed" else 0.0,
+            "rosa_address_source_online_seq": 1.0 if address_source.startswith("seq:online") else 0.0,
+            "rosa_address_source_reference_seq": 1.0 if address_source.startswith("seq:reference") else 0.0,
+            "rosa_address_source_online_step": 1.0 if address_source.startswith("step:") else 0.0,
             "rosa_fire_coverage": active.float().mean().item(),
             "rosa_fired_avg_match_len": fired_match_lens[active].float().mean().item() if active.any() else 0.0,
             "rosa_raw_match_coverage": raw_has_match.float().mean().item(),

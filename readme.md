@@ -68,6 +68,11 @@ git log --oneline -5
   - 作为在线训练主线的第一版统一入口
   - 当前训练默认已切到 `online_seq + online_exact`
   - `doc_local` / `global_train` 在线模式默认提供 `full doc prefix` 左侧 memory，用于和旧 reference 路径对齐
+  - 训练 / 评测输出里可直接看地址来源统计：
+    - `rosa_address_source_precomputed`
+    - `rosa_address_source_online_seq`
+    - `rosa_address_source_reference_seq`
+    - `rosa_address_source_online_step`
 
 ## Prefetch / Staging
 

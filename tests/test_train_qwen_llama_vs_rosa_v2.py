@@ -1,6 +1,8 @@
 import json
+import math
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import torch
@@ -453,6 +455,108 @@ class RosaSequenceAddressModeTests(unittest.TestCase):
         self.assertTrue(torch.equal(reference_batch.fired_match_lens, online_batch.fired_match_lens))
         self.assertTrue(torch.equal(reference_batch.valid_mask, online_batch.valid_mask))
         self.assertTrue(torch.equal(reference_batch.special_mask, online_batch.special_mask))
+
+
+class RosaOnlineTrainingForwardTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = rosa_mod.ModelConfig(
+            vocab_size=32,
+            max_seq_len=8,
+            dim=16,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=32,
+        )
+
+    def test_forward_without_precomputed_uses_online_sequence_addressing_and_backprops(self):
+        rosa_mod.set_seed(7171)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="online_exact",
+        )
+        input_ids = torch.tensor([[1, 2, 1, 2]], dtype=torch.long)
+        labels = torch.tensor([[2, 1, 2, 3]], dtype=torch.long)
+        memory_ids = torch.empty((1, 0), dtype=torch.long)
+
+        with mock.patch.object(model.address_engine, "forward_seq", wraps=model.address_engine.forward_seq) as forward_seq:
+            out = model(input_ids=input_ids, labels=labels, rosa_memory_ids=memory_ids)
+
+        self.assertEqual(forward_seq.call_count, 1)
+        self.assertEqual(out["rosa_address_source_online_seq"], 1.0)
+        self.assertEqual(out["rosa_address_source_precomputed"], 0.0)
+        self.assertEqual(out["rosa_address_source_reference_seq"], 0.0)
+        self.assertTrue(torch.isfinite(out["loss"]))
+
+        out["loss"].backward()
+        self.assertIsNotNone(model.embed_tokens.weight.grad)
+        self.assertGreater(model.embed_tokens.weight.grad.abs().sum().item(), 0.0)
+
+    def test_train_one_model_runs_on_online_seq_dataset_without_precomputed_features(self):
+        docs = [
+            [1, 2, 1, 2, 3, 4],
+            [5, 6, 5, 6, 7, 8],
+            [9, 10, 9, 10, 11, 12],
+        ]
+        train_ds, val_ds, test_ds, meta = rosa_mod.build_chunk_datasets(
+            docs,
+            docs[:1],
+            docs[1:2],
+            seq_len=3,
+            pad_id=0,
+            stride=3,
+            rosa_memory_tokens=1,
+            rosa_memory_mode="doc_local",
+            rosa_global_memory_tokens=0,
+            rosa_backend="sam",
+            rosa_train_mode="online_seq",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+        )
+        self.assertEqual(meta["effective_train_mode"], "online_seq")
+        self.assertFalse(meta["precomputed_doc_local_sam"])
+
+        train_loader, val_loader, _ = rosa_mod.build_dataloaders(
+            train_ds,
+            val_ds,
+            test_ds,
+            batch_size=2,
+            pad_id=0,
+            train_seed=2026,
+        )
+
+        rosa_mod.set_seed(7272)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="online_exact",
+        )
+        history = rosa_mod.train_one_model(
+            model,
+            train_loader,
+            val_loader,
+            device=torch.device("cpu"),
+            pad_id=0,
+            epochs=1,
+            lr=1e-3,
+            weight_decay=0.0,
+            grad_clip=1.0,
+            use_bf16=False,
+        )
+
+        self.assertEqual(len(history["train"]), 1)
+        self.assertEqual(len(history["val"]), 1)
+        self.assertEqual(history["train"][0]["rosa_address_source_online_seq"], 1.0)
+        self.assertEqual(history["train"][0]["rosa_address_source_precomputed"], 0.0)
+        self.assertEqual(history["val"][0]["rosa_address_source_online_seq"], 1.0)
+        self.assertTrue(math.isfinite(history["train"][0]["loss"]))
+        self.assertTrue(math.isfinite(history["val"][0]["loss"]))
 
 
 class RosaHotCacheIntegrationTests(unittest.TestCase):
