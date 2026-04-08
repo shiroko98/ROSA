@@ -202,6 +202,7 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 - `ROSA v2 - Online Baseline Profile (Qwen ckpt compare)`：用现有 Qwen checkpoint 直接比较 reference vs online。
 - `ROSA v2 - P1 Value+Gate Smoke (Qwen)`：直接训练一版 `per_layer + context_gate` 小实验。
 - `ROSA v2 - Online V1 Smoke (Qwen)`：在线主线 V1 配方的小样本训练入口。
+- `ROSA v2 - Compare Small Online V1 (64 docs)`：用 `64/16/16` docs 对比 baseline vs ROSA 的小实验入口。
 - `ROSA v2 - Online Baseline Profile (P1 Value+Gate Smoke)`：快速看 P1 组合路径是否跑通。
 - `ROSA v2 - Online Baseline Profile (P1 Prefetch Smoke)`：快速看 prefetch/staging 统计是否正常。
 - `ROSA v2 - Online Baseline Profile (P1 Hot Cache Smoke)`：快速看热点缓存的命中率与 tail latency。
