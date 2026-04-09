@@ -494,6 +494,14 @@
     - 输出目录会在构建早期就出现 `*.tokens.bin`
     - 多进程分词小样本 smoke 已跑通
     - 单独 `--data_path` 的兼容切分模式仍保留旧行为，不建议用于大数据
+- wandb 监控已补齐：
+  - 新增 `rosa_wandb.py`
+  - 当前训练默认仍只输出本地日志；打开 `--wandb` 后会按 `global_step` 持续上报
+  - 每个优化器 step 会记录：
+    - `loss / ppl / token_acc`
+    - `rosa_*`
+    - timing 指标（如果启用 `--train_timing`）
+  - 服务器脚本已支持从 `scripts/server/server_env.sh` 一处开启 `ENABLE_WANDB=1`
 
 ## 备注
 

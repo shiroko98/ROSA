@@ -87,3 +87,14 @@ export RUN_MODELS="${RUN_MODELS:-rosa_fused}"
 export SAVE_EVERY_EPOCHS="${SAVE_EVERY_EPOCHS:-1}"
 export TRAIN_TIMING="${TRAIN_TIMING:-1}"
 export ACTIVATION_CHECKPOINTING="${ACTIVATION_CHECKPOINTING:-1}"
+
+# =========================
+# 6. wandb 监控
+# =========================
+export ENABLE_WANDB="${ENABLE_WANDB:-0}"
+export WANDB_PROJECT="${WANDB_PROJECT:-ROSA}"
+export WANDB_ENTITY="${WANDB_ENTITY:-}"
+export WANDB_RUN_NAME="${WANDB_RUN_NAME:-}"
+export WANDB_GROUP="${WANDB_GROUP:-}"
+export WANDB_TAGS="${WANDB_TAGS:-}"
+export WANDB_MODE="${WANDB_MODE:-online}"

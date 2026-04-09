@@ -259,6 +259,10 @@
    - 始终使用 `--train_data_path/--val_data_path/--test_data_path`
    - 配合 `--tokenize_workers`
    - 避免单独 `--data_path` 兼容模式
+9. 已补 wandb 监控：
+   - 训练脚本新增 `--wandb*` 参数
+   - 当前按 `global_step` 持续上报训练指标
+   - 服务器脚本统一从 `scripts/server/server_env.sh` 读取 `ENABLE_WANDB` 等开关
 
 ## 自我验证清单
 

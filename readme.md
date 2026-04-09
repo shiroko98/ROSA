@@ -240,6 +240,50 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - epoch 级 checkpoint/save-resume
   - 可只训练 `rosa_fused`，避免服务器上顺带再跑一遍 baseline
 
+## wandb 监控
+
+- 训练脚本开关：
+  - `--wandb`
+  - `--wandb_project`
+  - `--wandb_entity`
+  - `--wandb_run_name`
+  - `--wandb_group`
+  - `--wandb_tags`
+  - `--wandb_mode online|offline|disabled`
+- 当前行为：
+  - 主进程按 `global_step` 持续上报训练指标，不再等到 epoch 结束
+  - 每次优化器 `step()` 后会上报：
+    - `loss / ppl / token_acc / valid_tokens`
+    - `rosa_*` 指标
+    - timing 指标（如果启用 `--train_timing`）
+  - 每个 epoch 结束后还会补充：
+    - `train_epoch`
+    - `val`
+    - `test`
+    - final summary
+- 服务器脚本开关：
+  - 在 `scripts/server/server_env.sh` 里设置：
+    - `ENABLE_WANDB=1`
+    - `WANDB_PROJECT`
+    - `WANDB_ENTITY`
+    - `WANDB_RUN_NAME`
+    - `WANDB_GROUP`
+    - `WANDB_TAGS`
+    - `WANDB_MODE`
+
+示例：
+
+```bash
+export ENABLE_WANDB=1
+export WANDB_PROJECT=ROSA
+export WANDB_GROUP=online_v1_8gpu
+export WANDB_RUN_NAME=minipile_qwen9b_online_v1
+export WANDB_TAGS=8gpu,ddp,online_v1
+export WANDB_MODE=online
+
+bash scripts/server/launch_8gpu_ddp_online_v1.sh
+```
+
 ## Distributed Training
 
 - 开关：

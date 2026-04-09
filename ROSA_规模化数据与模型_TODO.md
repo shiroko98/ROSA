@@ -105,6 +105,9 @@
   - `DistributedSampler`
   - 分布式训练/评估指标归约
   - FSDP/DDP 下的 checkpoint/save-resume v1
+  - `wandb` 监控：
+    - `--wandb`
+    - 按 `global_step` 持续记录训练指标
   - 8 卡服务器启动脚本：
     - `scripts/server/server_env.sh`
     - `scripts/server/launch_8gpu_ddp_online_v1.sh`

@@ -51,6 +51,22 @@ if [[ -n "${RESUME_FROM:-}" ]]; then
   TRAIN_ARGS+=(--resume_from "${RESUME_FROM}")
 fi
 
+if [[ "${ENABLE_WANDB}" == "1" ]]; then
+  TRAIN_ARGS+=(--wandb --wandb_project "${WANDB_PROJECT}" --wandb_mode "${WANDB_MODE}")
+  if [[ -n "${WANDB_ENTITY}" ]]; then
+    TRAIN_ARGS+=(--wandb_entity "${WANDB_ENTITY}")
+  fi
+  if [[ -n "${WANDB_RUN_NAME}" ]]; then
+    TRAIN_ARGS+=(--wandb_run_name "${WANDB_RUN_NAME}")
+  fi
+  if [[ -n "${WANDB_GROUP}" ]]; then
+    TRAIN_ARGS+=(--wandb_group "${WANDB_GROUP}")
+  fi
+  if [[ -n "${WANDB_TAGS}" ]]; then
+    TRAIN_ARGS+=(--wandb_tags "${WANDB_TAGS}")
+  fi
+fi
+
 TRAIN_ARGS+=("${EXTRA_ARGS[@]}")
 
 (

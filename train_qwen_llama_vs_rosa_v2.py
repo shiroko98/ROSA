@@ -71,6 +71,7 @@ from rosa_train_async import maybe_wrap_train_address_prefetch, read_async_prefe
 from rosa_training_cache import build_sequence_online_precomputed_rosa
 from rosa_training_snapshot import build_sequence_online_state_snapshots
 from rosa_value_store import RosaValueStore
+from rosa_wandb import WandbLogger, init_wandb_logger
 
 try:
     from transformers import AutoTokenizer
@@ -2121,6 +2122,7 @@ def train_one_model(
     resume_state: Optional[Dict[str, Any]] = None,
     resume_checkpoint: Optional[Dict[str, Any]] = None,
     run_name: str = "model",
+    wandb_logger: Optional[WandbLogger] = None,
 ) -> Dict[str, List[Dict[str, float]]]:
     if distributed_context is None or not distributed_context.enabled:
         model.to(device)
@@ -2159,6 +2161,12 @@ def train_one_model(
         rosa_stats_sum: Dict[str, float] = {}
         rosa_steps = 0
         timing_rows: List[Dict[str, float]] = []
+        step_nll = 0.0
+        step_tokens = 0
+        step_correct = 0
+        step_rosa_stats_sum: Dict[str, float] = {}
+        step_rosa_steps = 0
+        step_timing_rows: List[Dict[str, float]] = []
         next_batch_started_at = time.perf_counter()
         optimizer_bundle.zero_grad(set_to_none=True)
 
@@ -2229,13 +2237,19 @@ def train_one_model(
             total_tokens += num
 
             pred = out["logits"].argmax(dim=-1)
-            correct += ((pred == y) & mask).sum().item()
+            batch_correct = ((pred == y) & mask).sum().item()
+            correct += batch_correct
+            step_nll += float(loss.item()) * num
+            step_tokens += num
+            step_correct += batch_correct
 
             rosa_keys = [k for k in out.keys() if k.startswith("rosa_")]
             if rosa_keys:
                 for k in rosa_keys:
                     rosa_stats_sum[k] = rosa_stats_sum.get(k, 0.0) + float(out[k])
+                    step_rosa_stats_sum[k] = step_rosa_stats_sum.get(k, 0.0) + float(out[k])
                 rosa_steps += 1
+                step_rosa_steps += 1
             if collect_timing:
                 row = {}
                 row.update(step_timer.export_ms())
@@ -2255,6 +2269,28 @@ def train_one_model(
                 )
                 row["timing_tokens_per_s"] = num / max(row["timing_step_ms"] / 1000.0, 1e-12)
                 timing_rows.append(row)
+                step_timing_rows.append(row)
+            if should_step:
+                if wandb_logger is not None and wandb_logger.enabled and step_tokens > 0:
+                    step_metrics = {
+                        "epoch": epoch,
+                        "loss": step_nll / max(1, step_tokens),
+                        "ppl": safe_ppl(step_nll / max(1, step_tokens)),
+                        "token_acc": step_correct / max(1, step_tokens),
+                        "valid_tokens": float(step_tokens),
+                    }
+                    if step_rosa_steps > 0:
+                        for k, v in step_rosa_stats_sum.items():
+                            step_metrics[k] = v / float(step_rosa_steps)
+                    if step_timing_rows:
+                        step_metrics.update(average_prefixed_metric(step_timing_rows, "timing_"))
+                    wandb_logger.log_metrics(step_metrics, step=global_step, prefix=f"{run_name}/train_step")
+                step_nll = 0.0
+                step_tokens = 0
+                step_correct = 0
+                step_rosa_stats_sum = {}
+                step_rosa_steps = 0
+                step_timing_rows = []
             next_batch_started_at = time.perf_counter()
 
         total_nll, total_tokens, correct, rosa_steps = reduce_scalar_sums(
@@ -2267,6 +2303,7 @@ def train_one_model(
         train_loss = total_nll / max(1, int(total_tokens))
         train_metrics = {
             "epoch": epoch,
+            "global_step": global_step,
             "loss": train_loss,
             "ppl": safe_ppl(train_loss),
             "token_acc": correct / max(1, int(total_tokens)),
@@ -2289,6 +2326,7 @@ def train_one_model(
             distributed_context=distributed_context,
         )
         val_metrics["epoch"] = epoch
+        val_metrics["global_step"] = global_step
 
         history["train"].append(train_metrics)
         history["val"].append(val_metrics)
@@ -2334,6 +2372,11 @@ def train_one_model(
                         ]
                     )
                 print("timing | " + " | ".join(timing_parts))
+        if wandb_logger is not None and wandb_logger.enabled:
+            wandb_logger.log_metrics(train_metrics, step=global_step, prefix=f"{run_name}/train_epoch")
+            wandb_logger.log_metrics(val_metrics, step=global_step, prefix=f"{run_name}/val")
+            wandb_logger.update_summary(train_metrics, prefix=f"{run_name}/train_epoch")
+            wandb_logger.update_summary(val_metrics, prefix=f"{run_name}/val")
         if checkpoint_manager is not None:
             maybe_barrier(distributed_context)
             checkpoint_manager.save(
@@ -2418,6 +2461,7 @@ def run_training_stage(
     distributed_context: Optional[DistributedContext],
     enable_async_prefetch: bool,
     resume_checkpoint: Optional[Dict[str, Any]] = None,
+    wandb_logger: Optional[WandbLogger] = None,
 ) -> Tuple[Dict[str, List[Dict[str, float]]], Dict[str, float], int]:
     set_activation_checkpointing(model, args.activation_checkpointing)
     wrapped_model = wrap_model_for_distributed(
@@ -2494,6 +2538,7 @@ def run_training_stage(
         resume_state=resume_checkpoint,
         resume_checkpoint=resume_checkpoint,
         run_name=stage_name,
+        wandb_logger=wandb_logger,
     )
     test_metrics = evaluate(
         wrapped_model,
@@ -2503,6 +2548,13 @@ def run_training_stage(
         collect_timing=args.train_timing,
         distributed_context=distributed_context,
     )
+    final_global_step = 0
+    if history.get("train"):
+        final_global_step = int(history["train"][-1].get("global_step", 0))
+    test_metrics["global_step"] = final_global_step
+    if wandb_logger is not None and wandb_logger.enabled:
+        wandb_logger.log_metrics(test_metrics, step=final_global_step, prefix=f"{stage_name}/test")
+        wandb_logger.update_summary(test_metrics, prefix=f"{stage_name}/test")
 
     if distributed_context is None or distributed_context.is_main_process:
         torch.save(extract_model_state_dict(wrapped_model), os.path.join(args.out_dir, f"{stage_name}.pt"))
@@ -2624,6 +2676,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
     parser.add_argument("--train_timing", action="store_true",
                         help="输出训练/评估阶段的同步 timing 统计；在 CUDA 上会加入 synchronize，适合定位慢点，不建议作为默认长期训练配置。")
+    parser.add_argument("--wandb", action="store_true",
+                        help="启用 Weights & Biases 监控。主进程会按 global_step 持续上报训练指标。")
+    parser.add_argument("--wandb_project", type=str, default="ROSA",
+                        help="wandb project 名称。")
+    parser.add_argument("--wandb_entity", type=str, default="",
+                        help="wandb entity / team；为空则使用当前账号默认空间。")
+    parser.add_argument("--wandb_run_name", type=str, default="",
+                        help="wandb run name；为空时由 wandb 自动生成。")
+    parser.add_argument("--wandb_group", type=str, default="",
+                        help="wandb group；可用于把同一批实验归组。")
+    parser.add_argument("--wandb_tags", type=str, default="",
+                        help="wandb tags，逗号分隔。")
+    parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"],
+                        help="wandb 模式；offline 会本地缓存，disabled 表示即使传了 --wandb 也不初始化。")
     parser.add_argument("--out_dir", type=str, default="outputs/rosa_compare")
     return parser
 
@@ -2820,6 +2886,8 @@ def main():
     log(f"ROSA context gate: {args.rosa_context_gate}")
     log(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     log(f"训练 timing: {args.train_timing}")
+    log(f"wandb: {args.wandb and args.wandb_mode != 'disabled'}")
+    log(f"wandb mode: {args.wandb_mode}")
     log(f"activation checkpointing: {args.activation_checkpointing}")
     log(f"grad accum steps: {args.grad_accum_steps}")
     log(f"save every epochs: {args.save_every_epochs}")
@@ -2872,6 +2940,44 @@ def main():
     else:
         log("注意：参数量不一致。")
 
+    wandb_logger = init_wandb_logger(
+        enabled=args.wandb,
+        is_main_process=is_main_process,
+        project=args.wandb_project,
+        mode=args.wandb_mode,
+        out_dir=args.out_dir,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        group=args.wandb_group,
+        tags=parse_csv_arg(args.wandb_tags),
+        config={
+            "args": vars(args),
+            "model_config": asdict(cfg),
+            "recipe": recipe_meta,
+            "dataset": {
+                "source": dataset_source,
+                "train_docs": train_doc_count,
+                "val_docs": val_doc_count,
+                "test_docs": test_doc_count,
+                "train_samples": len(train_ds),
+                "val_samples": len(val_ds),
+                "test_samples": len(test_ds),
+            },
+            "param_count": {
+                "baseline": base_params,
+                "rosa_fused": rosa_params,
+            },
+            "distributed": {
+                "strategy": args.distributed_strategy,
+                "backend": distributed_context.backend,
+                "world_size": distributed_context.world_size,
+            },
+        },
+        log_print=log,
+    )
+    if wandb_logger.enabled:
+        log(f"[wandb] 已启用，project={args.wandb_project} mode={args.wandb_mode}")
+
     executed_results: Dict[str, Any] = {}
     if args.run_models in {"both", "baseline"}:
         log("\n==== 训练 baseline ====")
@@ -2889,6 +2995,7 @@ def main():
             distributed_context=distributed_context,
             enable_async_prefetch=False,
             resume_checkpoint=(resume_checkpoint if args.run_models == "baseline" else None),
+            wandb_logger=wandb_logger,
         )
         executed_results["baseline"] = {
             "history": base_hist,
@@ -2911,6 +3018,7 @@ def main():
             distributed_context=distributed_context,
             enable_async_prefetch=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
             resume_checkpoint=(resume_checkpoint if args.run_models == "rosa_fused" else None),
+            wandb_logger=wandb_logger,
         )
         executed_results["rosa_fused"] = {
             "history": rosa_hist,
@@ -2988,6 +3096,19 @@ def main():
             final_report["rosa_fused_test"] = executed_results["rosa_fused"]["test"]
         print(json.dumps(final_report, ensure_ascii=False, indent=2))
         print(f"结果已保存到: {args.out_dir}")
+        if wandb_logger.enabled:
+            wandb_logger.update_summary(
+                {
+                    "baseline_params": float(base_params),
+                    "rosa_params": float(rosa_params),
+                },
+                prefix="final",
+            )
+            if "baseline_test" in final_report:
+                wandb_logger.update_summary(final_report["baseline_test"], prefix="final/baseline_test")
+            if "rosa_fused_test" in final_report:
+                wandb_logger.update_summary(final_report["rosa_fused_test"], prefix="final/rosa_fused_test")
+    wandb_logger.finish()
     maybe_barrier(distributed_context)
     destroy_distributed_context(distributed_context)
 

@@ -48,4 +48,5 @@ tomlkit==0.13.2
 typer==0.15.2
 typing-extensions==4.12.2
 uvicorn==0.34.0
+wandb==0.19.11
 websockets==15.0.1
