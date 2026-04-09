@@ -15,6 +15,7 @@
 - 当前进展：`online_sam` 的 sequence 快路径已落地，默认可通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`；`stateful` 保留为逐 token 回归实现
 - 当前进展：`online_v2` 配方已落地，把 `per_layer ValueStore` 正式接入在线训练主线实验入口，训练 / profile / sweep 现在都能直接通过 recipe 复用这组配置
 - 当前进展：训练期 `snapshot + 短 replay` 第一版已落地，当前可在文档级缓存稀疏 `RosaStateSnapshot`，并在 chunk 起点恢复在线状态而不必为每个 sample 复制整段地址表
+- 当前进展：训练期地址异步预取 v2 已落地，当前支持可配置 `prefetch depth`，并把后台等待 / 准备 / 队列填充率接入 training timing
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -173,13 +174,20 @@
   - 当前结论：
     - snapshot 对 sync 路径收益明确，`64~128` 区间最好
     - async 已经把地址等待几乎完全隐藏，在这个小配置上再叠 snapshot 没有额外收益
+- 小型 async depth 实验（`16/4/4 docs`, `online_v1 + fast + async`）当前结果：
+  - depth 1：`step ~103.47ms`，`rosa_addr ~0.75ms`，`async_wait ~0.09ms`
+  - depth 2：`step ~103.62ms`，`rosa_addr ~0.72ms`，`async_wait ~0.03ms`
+  - depth 4：`step ~104.27ms`，`rosa_addr ~0.79ms`，`async_wait ~0.03ms`
+  - 当前结论：
+    - 更深的预取队列已经可用，但这组小配置里默认 `depth=1` 仍然最好
+    - `depth>1` 的价值更偏向长前缀 / 更重地址支路 / 后台线程开始吃紧时的稳定性提升
 
 ## 下一任务
 
 1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
 2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
 3. 训练性能优化后续优先项：
-   - 地址支路 CPU worker 前移 / next-batch overlap（继续作为默认主线优化）
+   - 地址支路 CPU worker 前移 / next-batch overlap（继续作为默认主线优化；当前 queue depth 可调，但默认先保持 `1`）
    - `online_sam` sequence 快路径进一步下沉到 C++/CUDA/Triton
    - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔（更偏 sync / 无 async / 大数据场景）
    - memory window / bookmark（保留为可选工程折中，而非默认主线）

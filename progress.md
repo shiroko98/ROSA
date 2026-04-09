@@ -34,6 +34,7 @@
 - [x] 在线主线 P2: `online_v2` per-layer recipe 主线化
 - [x] 在线主线 P2: 文档级状态快照与 chunk 起点恢复 v1
 - [x] 在线主线 P2: snapshot interval sweep（sync/async）
+- [x] 在线主线 P2: 训练地址异步预取 v2（可配置预取深度 + 更细 timing）
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -223,6 +224,17 @@
   - 当前结论：
     - `snapshot` 对 sync 路径收益明确，`64~128` 区间最好
     - async 已经把地址等待几乎完全隐藏，在这个小配置上再叠 `snapshot` 没有额外收益
+- 训练地址异步预取 v2 当前已支持：
+  - `--rosa_train_address_async_prefetch_batches`
+  - batch 级 `async_prefetch_wait / async_prefetch_prepare / async_prefetch_queue_fill`
+  - 训练与评估 timing 中的独立统计输出
+- 当前一次 async depth 小实验（`16/4/4 docs`, `online_v1 + fast + async`）：
+  - depth 1：`step ~103.47ms`，`rosa_addr ~0.75ms`，`async_wait ~0.09ms`
+  - depth 2：`step ~103.62ms`，`rosa_addr ~0.72ms`，`async_wait ~0.03ms`
+  - depth 4：`step ~104.27ms`，`rosa_addr ~0.79ms`，`async_wait ~0.03ms`
+  - 当前结论：
+    - 更深预取队列已经可用，但这组小配置里 `depth=1` 仍然最好
+    - 当前默认先保持 `1`，后续再在更长前缀 / 更重负载下继续评估
 
 ## 自我验证记录
 

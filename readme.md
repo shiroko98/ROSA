@@ -92,6 +92,7 @@ git log --oneline -5
     - `--rosa_train_state_snapshot_interval 256`
   - 当前训练默认会开启“地址异步预取”：主干训练当前 batch 时，CPU 后台准备下一 batch 的在线地址
   - 如需关闭，可加：`--disable_rosa_train_address_async`
+  - 如需调整后台预取队列深度，可加：`--rosa_train_address_async_prefetch_batches N`
   - 当前训练默认推荐：`--rosa_online_sam_impl fast`
   - 训练 / 评测输出里可直接看地址来源统计：
     - `rosa_address_source_precomputed`
@@ -250,6 +251,11 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - 同步地址：`rosa_addr ~44.7ms`，`step ~103.3ms`
   - 异步地址：`rosa_addr ~0.5ms`，`step ~69.1ms`
   - 说明当前更适合作为主线的加速方案，是“next-batch 地址异步预取”，而不是默认整数据集缓存
+- 当前一次异步预取深度小实验（`16/4/4 docs`, `online_v1 + fast + async`）：
+  - depth 1：`step ~103.47ms`，`async_wait ~0.09ms`
+  - depth 2：`step ~103.62ms`，`async_wait ~0.03ms`
+  - depth 4：`step ~104.27ms`，`async_wait ~0.03ms`
+  - 说明更深的预取队列已经可用，但在这组小配置里默认 `depth=1` 仍然最好；`depth>1` 更偏向在更长前缀和更重地址支路下提供稳定性
 - 当前一次纯地址 microbenchmark（`B=4, T=128, M=256`）：
   - `online_sam stateful ~4.734ms`
   - `online_sam fast ~1.836ms`

@@ -41,7 +41,7 @@ from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 from rosa_session import RosaBatchSession
 from rosa_timing import TimingCollector
-from rosa_train_async import maybe_wrap_train_address_prefetch
+from rosa_train_async import maybe_wrap_train_address_prefetch, read_async_prefetch_batch_stats
 from rosa_training_cache import build_sequence_online_precomputed_rosa
 from rosa_training_snapshot import build_sequence_online_state_snapshots
 
@@ -2003,6 +2003,19 @@ def average_prefixed_metric(rows: Sequence[Dict[str, float]], prefix: str) -> Di
     }
 
 
+def add_async_prefetch_timing(step_timer: TimingCollector, batch: Dict[str, Any], *, eval_mode: bool) -> Dict[str, float]:
+    stats = read_async_prefetch_batch_stats(batch)
+    if not stats:
+        return {}
+    wait_s = stats.get("rosa_async_prefetch_wait_s")
+    prepare_s = stats.get("rosa_async_prefetch_prepare_s")
+    if wait_s is not None:
+        step_timer.add_seconds("eval_async_prefetch_wait" if eval_mode else "async_prefetch_wait", wait_s)
+    if prepare_s is not None:
+        step_timer.add_seconds("eval_async_prefetch_prepare" if eval_mode else "async_prefetch_prepare", prepare_s)
+    return stats
+
+
 def evaluate(
     model: nn.Module,
     loader: DataLoader,
@@ -2025,6 +2038,7 @@ def evaluate(
         for batch in loader:
             step_timer = TimingCollector(enabled=collect_timing, device=device)
             step_timer.add_seconds("eval_data_wait", time.perf_counter() - next_batch_started_at)
+            async_prefetch_stats = add_async_prefetch_timing(step_timer, batch, eval_mode=True)
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
             state_snapshots = batch.get("rosa_state_snapshots")
@@ -2068,6 +2082,10 @@ def evaluate(
                 row = {}
                 row.update(step_timer.export_ms())
                 row.update(model_timer.export_ms())
+                if async_prefetch_stats:
+                    row["timing_eval_async_prefetch_depth"] = async_prefetch_stats.get("rosa_async_prefetch_depth", 0.0)
+                    row["timing_eval_async_prefetch_inflight"] = async_prefetch_stats.get("rosa_async_prefetch_inflight", 0.0)
+                    row["timing_eval_async_prefetch_queue_fill"] = async_prefetch_stats.get("rosa_async_prefetch_queue_fill", 0.0)
                 row["timing_eval_tokens_per_s"] = num / max(row.get("timing_eval_forward_ms", 0.0) / 1000.0, 1e-12)
                 timing_rows.append(row)
             next_batch_started_at = time.perf_counter()
@@ -2119,6 +2137,7 @@ def train_one_model(
         for batch in train_loader:
             step_timer = TimingCollector(enabled=collect_timing, device=device)
             step_timer.add_seconds("data_wait", time.perf_counter() - next_batch_started_at)
+            async_prefetch_stats = add_async_prefetch_timing(step_timer, batch, eval_mode=False)
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
             state_snapshots = batch.get("rosa_state_snapshots")
@@ -2188,6 +2207,10 @@ def train_one_model(
                 row = {}
                 row.update(step_timer.export_ms())
                 row.update(model_timer.export_ms())
+                if async_prefetch_stats:
+                    row["timing_async_prefetch_depth"] = async_prefetch_stats.get("rosa_async_prefetch_depth", 0.0)
+                    row["timing_async_prefetch_inflight"] = async_prefetch_stats.get("rosa_async_prefetch_inflight", 0.0)
+                    row["timing_async_prefetch_queue_fill"] = async_prefetch_stats.get("rosa_async_prefetch_queue_fill", 0.0)
                 row["timing_step_ms"] = (
                     row.get("timing_data_wait_ms", 0.0)
                     + row.get("timing_optim_zero_grad_ms", 0.0)
@@ -2247,6 +2270,14 @@ def train_one_model(
                         f"rosa_payload {train_metrics.get('timing_model_rosa_payload_ms', 0.0):.2f}ms",
                         f"trunk {train_metrics.get('timing_model_trunk_ms', 0.0):.2f}ms",
                         f"head {train_metrics.get('timing_model_head_ms', 0.0):.2f}ms",
+                    ]
+                )
+            if "timing_async_prefetch_wait_ms" in train_metrics:
+                timing_parts.extend(
+                    [
+                        f"async_wait {train_metrics.get('timing_async_prefetch_wait_ms', 0.0):.2f}ms",
+                        f"async_prep {train_metrics.get('timing_async_prefetch_prepare_ms', 0.0):.2f}ms",
+                        f"async_fill {train_metrics.get('timing_async_prefetch_queue_fill', 0.0):.2f}",
                     ]
                 )
             print("timing | " + " | ".join(timing_parts))
@@ -2333,6 +2364,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="关闭训练期 online_seq 地址异步预取；默认会在主干训练当前 batch 时，由 CPU 后台准备下一 batch 地址。")
     parser.add_argument("--rosa_train_address_async_workers", type=int, default=1,
                         help="训练期地址异步预取使用的后台 worker 数。")
+    parser.add_argument("--rosa_train_address_async_prefetch_batches", type=int, default=1,
+                        help="训练期地址异步预取的队列深度；1 表示只提前准备 1 个 batch，>1 表示维持更深的 next-batch 预取队列。")
     parser.add_argument("--rosa_recipe", type=str, default="custom",
                         choices=available_rosa_recipe_names(),
                         help="应用一个 ROSA 预设配方。online_v1 会固定 shared value、online_sam、单早层与 context gate。")
@@ -2459,6 +2492,7 @@ def main():
     print(f"ROSA train address cache: {args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache}")
     print(f"ROSA train state snapshot: {args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot}")
     print(f"ROSA train state snapshot interval: {args.rosa_train_state_snapshot_interval}")
+    print(f"ROSA train address async prefetch depth: {args.rosa_train_address_async_prefetch_batches}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     if recipe_meta["applied"]:
         print(f"ROSA recipe detail: {recipe_meta['description']}")
@@ -2597,18 +2631,21 @@ def main():
         address_engine=rosa_model.address_engine,
         enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
         max_workers=args.rosa_train_address_async_workers,
+        prefetch_batches=args.rosa_train_address_async_prefetch_batches,
     )
     rosa_val_loader = maybe_wrap_train_address_prefetch(
         val_loader,
         address_engine=rosa_model.address_engine,
         enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
         max_workers=args.rosa_train_address_async_workers,
+        prefetch_batches=args.rosa_train_address_async_prefetch_batches,
     )
     rosa_test_loader = maybe_wrap_train_address_prefetch(
         test_loader,
         address_engine=rosa_model.address_engine,
         enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
         max_workers=args.rosa_train_address_async_workers,
+        prefetch_batches=args.rosa_train_address_async_prefetch_batches,
     )
     rosa_hist = train_one_model(
         rosa_model, rosa_train_loader, rosa_val_loader, device,
@@ -2653,6 +2690,7 @@ def main():
             "online_sam_impl": args.rosa_online_sam_impl,
             "train_address_async": (args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
             "train_address_async_workers": args.rosa_train_address_async_workers,
+            "train_address_async_prefetch_batches": args.rosa_train_address_async_prefetch_batches,
             "train_address_cache": (args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
             "train_state_snapshot": (args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot),
             "train_state_snapshot_interval": args.rosa_train_state_snapshot_interval,

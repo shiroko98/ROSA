@@ -20,6 +20,7 @@
 ## 当前推进状态
 
 - 已完成：训练期地址支路异步化 / overlap（默认主线已启用 next-batch 地址异步预取）
+- 已完成第二版：训练期地址异步预取支持可配置队列深度，并将后台等待 / 准备 / 队列填充率接入 training timing
 - 已完成第一版：`online_sam` sequence 快路径，默认通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`
 - 已完成第一版：训练期 `snapshot + 短 replay`，支持文档级稀疏 state snapshot 与 chunk 起点恢复
 - 已完成第一轮 sweep：小型 `snapshot interval` 对比显示，`snapshot` 对同步地址路径收益明显；在已开启 async overlap 的小配置上，额外收益接近于零
@@ -41,9 +42,9 @@
 ## 性能优化待办补充
 
 - 训练地址异步预取 v2
-  - 从当前 `1 worker + 1 batch ahead` 升级到可配置 queue depth
-  - 比较 thread / process 两种实现
-  - 支持按 batch token 数做更稳的预取调度
+  - [x] 从当前 `1 worker + 1 batch ahead` 升级到可配置 queue depth
+  - [ ] 比较 thread / process 两种实现
+  - [ ] 支持按 batch token 数做更稳的预取调度
 - 训练地址异步预取 v3
   - 把地址计算、batch 准备、host->device 拷贝拆成独立阶段
   - 尝试 pinned host buffer，减少主线程等待

@@ -776,6 +776,64 @@ class TrainingTimingTests(unittest.TestCase):
         self.assertGreater(train_row["timing_step_ms"], 0.0)
         self.assertGreater(val_row["timing_eval_forward_ms"], 0.0)
 
+    def test_train_one_model_collects_async_prefetch_timing_metrics(self):
+        train_loader, val_loader, _ = rosa_mod.build_dataloaders(
+            self.dataset,
+            self.dataset,
+            self.dataset,
+            batch_size=2,
+            pad_id=0,
+            train_seed=2026,
+        )
+        rosa_mod.set_seed(9191)
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=1,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=False,
+        )
+        train_loader = rosa_mod.maybe_wrap_train_address_prefetch(
+            train_loader,
+            address_engine=model.address_engine,
+            enabled=True,
+            max_workers=1,
+            prefetch_batches=2,
+        )
+        val_loader = rosa_mod.maybe_wrap_train_address_prefetch(
+            val_loader,
+            address_engine=model.address_engine,
+            enabled=True,
+            max_workers=1,
+            prefetch_batches=2,
+        )
+
+        history = rosa_mod.train_one_model(
+            model,
+            train_loader,
+            val_loader,
+            device=torch.device("cpu"),
+            pad_id=0,
+            epochs=1,
+            lr=1e-3,
+            weight_decay=0.0,
+            grad_clip=1.0,
+            use_bf16=False,
+            collect_timing=True,
+        )
+
+        train_row = history["train"][0]
+        val_row = history["val"][0]
+        self.assertIn("timing_async_prefetch_wait_ms", train_row)
+        self.assertIn("timing_async_prefetch_prepare_ms", train_row)
+        self.assertIn("timing_async_prefetch_queue_fill", train_row)
+        self.assertIn("timing_eval_async_prefetch_wait_ms", val_row)
+        self.assertIn("timing_eval_async_prefetch_prepare_ms", val_row)
+        self.assertIn("timing_eval_async_prefetch_queue_fill", val_row)
+        self.assertGreaterEqual(train_row["timing_async_prefetch_depth"], 1.0)
+        self.assertGreaterEqual(train_row["timing_async_prefetch_queue_fill"], 0.0)
+
 
 class TrainAddressAsyncLoaderTests(unittest.TestCase):
     def setUp(self):
@@ -823,6 +881,7 @@ class TrainAddressAsyncLoaderTests(unittest.TestCase):
             address_engine=model.address_engine,
             enabled=True,
             max_workers=1,
+            prefetch_batches=1,
         )
         batch = next(iter(wrapped))
         direct = model.compute_rosa_address_batch(
@@ -856,6 +915,7 @@ class TrainAddressAsyncLoaderTests(unittest.TestCase):
             address_engine=model.address_engine,
             enabled=True,
             max_workers=1,
+            prefetch_batches=1,
         )
         batch = next(iter(wrapped))
         labels = rosa_mod.labels_with_ignore(batch["labels"], 0)
@@ -916,6 +976,7 @@ class TrainAddressAsyncLoaderTests(unittest.TestCase):
             address_engine=model.address_engine,
             enabled=True,
             max_workers=1,
+            prefetch_batches=1,
         )
         batch = next(iter(wrapped))
         direct = model.compute_rosa_address_batch(
@@ -927,6 +988,41 @@ class TrainAddressAsyncLoaderTests(unittest.TestCase):
         self.assertTrue(torch.equal(batch["rosa_precomputed_match_lens"], direct.fired_match_lens))
         self.assertTrue(torch.equal(batch["rosa_precomputed_raw_best_lens"], direct.raw_match_lens))
         self.assertEqual(batch["rosa_precomputed_source"], "seq:online_sam:snapshot")
+
+    def test_async_loader_reports_prefetch_depth_and_wait_stats(self):
+        loader, _, _ = rosa_mod.build_dataloaders(
+            self.dataset,
+            self.dataset,
+            self.dataset,
+            batch_size=1,
+            pad_id=0,
+            train_seed=2026,
+        )
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=1,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=False,
+        )
+        wrapped = rosa_mod.maybe_wrap_train_address_prefetch(
+            loader,
+            address_engine=model.address_engine,
+            enabled=True,
+            max_workers=1,
+            prefetch_batches=2,
+        )
+        batch = next(iter(wrapped))
+        self.assertIn("rosa_async_prefetch_prepare_s", batch)
+        self.assertIn("rosa_async_prefetch_wait_s", batch)
+        self.assertIn("rosa_async_prefetch_depth", batch)
+        self.assertIn("rosa_async_prefetch_inflight", batch)
+        self.assertIn("rosa_async_prefetch_queue_fill", batch)
+        self.assertEqual(batch["rosa_async_prefetch_depth"], 2.0)
+        self.assertGreaterEqual(batch["rosa_async_prefetch_inflight"], 1.0)
+        self.assertGreaterEqual(batch["rosa_async_prefetch_queue_fill"], 0.0)
+        self.assertLessEqual(batch["rosa_async_prefetch_queue_fill"], 1.0)
 
 
 class GlobalTrainMemoryTests(unittest.TestCase):

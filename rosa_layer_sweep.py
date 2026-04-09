@@ -286,18 +286,21 @@ def run_training_entry(args, context: SweepTrainingContext, layer_ids: Sequence[
         address_engine=model.address_engine,
         enabled=(args.rosa_train_mode == "online_seq" and not getattr(args, "disable_rosa_train_address_async", False)),
         max_workers=getattr(args, "rosa_train_address_async_workers", 1),
+        prefetch_batches=getattr(args, "rosa_train_address_async_prefetch_batches", 1),
     )
     val_loader = maybe_wrap_train_address_prefetch(
         val_loader,
         address_engine=model.address_engine,
         enabled=(args.rosa_train_mode == "online_seq" and not getattr(args, "disable_rosa_train_address_async", False)),
         max_workers=getattr(args, "rosa_train_address_async_workers", 1),
+        prefetch_batches=getattr(args, "rosa_train_address_async_prefetch_batches", 1),
     )
     test_loader = maybe_wrap_train_address_prefetch(
         test_loader,
         address_engine=model.address_engine,
         enabled=(args.rosa_train_mode == "online_seq" and not getattr(args, "disable_rosa_train_address_async", False)),
         max_workers=getattr(args, "rosa_train_address_async_workers", 1),
+        prefetch_batches=getattr(args, "rosa_train_address_async_prefetch_batches", 1),
     )
     param_count = rosa_mod.count_params(model)
     history = rosa_mod.train_one_model(
