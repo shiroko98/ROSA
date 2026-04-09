@@ -41,6 +41,8 @@
 - [x] 规模化 P1: 文档级索引与按需切片
 - [x] 规模化 P1: 稀疏活跃项 `ValueStore` 训练 v1
 - [x] 规模化 P1: 本地行分片 `ValueStore` v1
+- [x] 规模化 P1: 大模型训练基础设施 v1
+- [x] 规模化 P2: 分布式训练 v1（DDP/FSDP）
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -431,6 +433,29 @@
   - 当前定位仍是“单机本地分片 v1”：
     - 已适合继续放大词表 / per-layer table 的单机实验
     - 但还不是跨卡 all-to-all 或 host-memory 大表方案
+- 大模型训练基础设施 v1 结论：
+  - 当前已支持：
+    - `activation checkpointing`
+    - `grad accumulation`
+    - epoch 级 `checkpoint/save-resume`
+    - `run_models baseline|rosa_fused|both`
+  - 已用本地 smoke 验证：
+    - `rosa_fused + grad_accum_steps=2 + activation_checkpointing`
+    - `last.pt` 恢复后从 `epoch 02` 继续训练
+- 分布式训练 v1 结论：
+  - 当前已支持：
+    - `--distributed_strategy ddp`
+    - `--distributed_strategy fsdp`
+    - 分布式 sampler
+    - 训练/评估指标归约
+    - DDP/FSDP 路径下的 checkpoint/save-resume v1
+  - 已用单进程分布式环境变量 smoke 验证：
+    - `ddp + rosa_fused`
+    - `fsdp + rosa_fused + activation_checkpointing`
+  - 当前边界：
+    - `FSDP` 首版暂不支持 `sparse ValueStore` 训练
+    - 当前本地行分片表不会自动变成跨卡 all-to-all memory 表
+    - 当前 FSDP 保存仍是 full-state 形态，先满足“8 卡可跑”，后续再继续优化
 
 ## 备注
 

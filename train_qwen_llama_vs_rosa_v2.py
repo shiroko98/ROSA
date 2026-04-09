@@ -37,6 +37,30 @@ from rosa_addressing import (
     sam_rosa_address_meta_with_memory,
     sam_rosa_predict,
 )
+from rosa_activation_checkpoint import (
+    block_forward_with_activation_checkpoint,
+    maybe_no_sync,
+    set_activation_checkpointing,
+)
+from rosa_checkpointing import TrainingCheckpointManager, load_training_checkpoint
+from rosa_distributed import (
+    DistributedContext,
+    build_distributed_sampler,
+    destroy_distributed_context,
+    extract_model_state_dict,
+    extract_optimizer_state,
+    init_distributed_context,
+    is_fsdp_model,
+    load_model_state_dict,
+    load_optimizer_state,
+    maybe_barrier,
+    reduce_mean_metric_dict,
+    reduce_sum_metric_dict,
+    reduce_scalar_sums,
+    set_sampler_epoch_if_needed,
+    unwrap_model,
+    wrap_model_for_distributed,
+)
 from rosa_memmap_dataset import build_memmap_chunk_datasets_from_manifest, load_pretokenized_memmap_manifest
 from rosa_optim import build_training_optimizers
 from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
@@ -562,19 +586,26 @@ def build_dataloaders(
     batch_size: int,
     pad_id: int,
     train_seed: int,
+    distributed_context: Optional[DistributedContext] = None,
 ):
     collate_fn = make_collate_fn(pad_id)
-    train_generator = torch.Generator()
-    train_generator.manual_seed(train_seed)
+    train_sampler = build_distributed_sampler(train_ds, ctx=distributed_context, shuffle=True, seed=train_seed)
+    val_sampler = build_distributed_sampler(val_ds, ctx=distributed_context, shuffle=False, seed=train_seed)
+    test_sampler = build_distributed_sampler(test_ds, ctx=distributed_context, shuffle=False, seed=train_seed)
+    train_generator = None
+    if train_sampler is None:
+        train_generator = torch.Generator()
+        train_generator.manual_seed(train_seed)
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         collate_fn=collate_fn,
         generator=train_generator,
     )
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, sampler=val_sampler, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, sampler=test_sampler, collate_fn=collate_fn)
     return train_loader, val_loader, test_loader
 
 
@@ -1302,6 +1333,7 @@ class BaseLM(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.cfg = cfg
+        self.activation_checkpointing_enabled = False
         self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.dim)
         self.layers = nn.ModuleList([DecoderBlock(cfg) for _ in range(cfg.n_layers)])
         self.norm = RMSNorm(cfg.dim, cfg.rms_norm_eps)
@@ -1328,7 +1360,12 @@ class BaseLM(nn.Module):
             attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
             attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
             for blk in self.layers:
-                x = blk(x, attn_mask)
+                x = block_forward_with_activation_checkpoint(
+                    blk,
+                    x,
+                    attn_mask,
+                    enabled=self.activation_checkpointing_enabled,
+                )
             x = self.norm(x)
         return x
 
@@ -1812,7 +1849,12 @@ class RosaFusedLM(BaseLM):
                         rosa_resid = rosa_value * len_scale * self.rosa_scale
                     rosa_resid = rosa_resid * active_mask
                     x = x + rosa_resid
-                x = blk(x, attn_mask)
+                x = block_forward_with_activation_checkpoint(
+                    blk,
+                    x,
+                    attn_mask,
+                    enabled=self.activation_checkpointing_enabled,
+                )
             x = self.norm(x)
 
         raw_has_match = raw_best_lens.gt(0)
@@ -1970,6 +2012,7 @@ def evaluate(
     pad_id: int,
     *,
     collect_timing: bool = False,
+    distributed_context: Optional[DistributedContext] = None,
 ) -> Dict[str, float]:
     model.eval()
     total_nll = 0.0
@@ -2037,18 +2080,26 @@ def evaluate(
                 timing_rows.append(row)
             next_batch_started_at = time.perf_counter()
 
-    loss = total_nll / max(1, total_tokens)
+    total_nll, total_tokens, correct, rosa_steps = reduce_scalar_sums(
+        [total_nll, float(total_tokens), float(correct), float(rosa_steps)],
+        ctx=distributed_context,
+        device=device,
+    )
+    if rosa_stats_sum:
+        rosa_stats_sum = reduce_sum_metric_dict(rosa_stats_sum, ctx=distributed_context, device=device)
+    loss = total_nll / max(1, int(total_tokens))
     metrics = {
         "loss": loss,
         "ppl": safe_ppl(loss),
-        "token_acc": correct / max(1, total_tokens),
-        "valid_tokens": total_tokens,
+        "token_acc": correct / max(1, int(total_tokens)),
+        "valid_tokens": int(total_tokens),
     }
     if rosa_steps > 0:
         for k, v in rosa_stats_sum.items():
-            metrics[k] = v / rosa_steps
+            metrics[k] = v / float(rosa_steps)
     if collect_timing and timing_rows:
-        metrics.update(average_prefixed_metric(timing_rows, "timing_"))
+        timing_metrics = average_prefixed_metric(timing_rows, "timing_")
+        metrics.update(reduce_mean_metric_dict(timing_metrics, ctx=distributed_context, device=device))
     return metrics
 
 
@@ -2064,8 +2115,15 @@ def train_one_model(
     grad_clip: float,
     use_bf16: bool,
     collect_timing: bool = False,
+    grad_accum_steps: int = 1,
+    distributed_context: Optional[DistributedContext] = None,
+    checkpoint_manager: Optional[TrainingCheckpointManager] = None,
+    resume_state: Optional[Dict[str, Any]] = None,
+    resume_checkpoint: Optional[Dict[str, Any]] = None,
+    run_name: str = "model",
 ) -> Dict[str, List[Dict[str, float]]]:
-    model.to(device)
+    if distributed_context is None or not distributed_context.enabled:
+        model.to(device)
     optimizer_bundle = build_training_optimizers(
         model,
         lr=lr,
@@ -2073,10 +2131,27 @@ def train_one_model(
         betas=(0.9, 0.95),
     )
     amp_enabled = use_bf16 and device.type == "cuda"
+    if resume_checkpoint is not None:
+        load_model_state_dict(model, resume_checkpoint["model_state"])
+        load_optimizer_state(model, optimizer_bundle, resume_checkpoint.get("optimizer_state", {}))
+    if distributed_context is not None and distributed_context.enabled and is_fsdp_model(model):
+        raw_model = unwrap_model(model)
+        rosa_value_store = getattr(raw_model, "rosa_value_store", None)
+        if rosa_value_store is not None and getattr(rosa_value_store, "uses_sparse_training", False):
+            raise ValueError("FSDP 首版暂不支持 sparse ValueStore 训练；请关闭 --rosa_sparse_value_training，或改用 DDP。")
 
+    grad_accum_steps = max(1, int(grad_accum_steps))
     history = {"train": [], "val": []}
-    for epoch in range(1, epochs + 1):
+    global_step = 0
+    start_epoch = 1
+    if resume_state is not None:
+        history = resume_state.get("history", history)
+        global_step = int(resume_state.get("global_step", 0))
+        start_epoch = int(resume_state.get("epoch", 0)) + 1
+
+    for epoch in range(start_epoch, epochs + 1):
         model.train()
+        set_sampler_epoch_if_needed(getattr(train_loader, "sampler", None), epoch - 1)
         total_nll = 0.0
         total_tokens = 0
         correct = 0
@@ -2085,8 +2160,10 @@ def train_one_model(
         rosa_steps = 0
         timing_rows: List[Dict[str, float]] = []
         next_batch_started_at = time.perf_counter()
+        optimizer_bundle.zero_grad(set_to_none=True)
 
-        for batch in train_loader:
+        num_batches = len(train_loader)
+        for batch_idx, batch in enumerate(train_loader, start=1):
             step_timer = TimingCollector(enabled=collect_timing, device=device)
             step_timer.add_seconds("data_wait", time.perf_counter() - next_batch_started_at)
             async_prefetch_stats = add_async_prefetch_timing(step_timer, batch, eval_mode=False)
@@ -2099,13 +2176,27 @@ def train_one_model(
             pre_raw = batch.get("rosa_precomputed_raw_best_lens")
             pre_source = batch.get("rosa_precomputed_source")
             y = labels_with_ignore(batch["labels"].to(device), pad_id)
-
-            with step_timer.section("optim_zero_grad"):
-                optimizer_bundle.zero_grad(set_to_none=True)
             model_timer = TimingCollector(enabled=collect_timing, device=device)
-            if amp_enabled:
-                with step_timer.section("forward"):
-                    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            should_step = (batch_idx % grad_accum_steps == 0) or (batch_idx == num_batches)
+            with maybe_no_sync(model, enabled=not should_step):
+                if amp_enabled:
+                    with step_timer.section("forward"):
+                        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                            out = model(
+                                x,
+                                y,
+                                rosa_memory_ids=mem,
+                                rosa_state_snapshots=state_snapshots,
+                                rosa_replay_ids=replay_ids.to(device) if replay_ids is not None else None,
+                                rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
+                                rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
+                                rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
+                                rosa_precomputed_source=pre_source,
+                                timing_collector=model_timer,
+                            )
+                            loss = out["loss"]
+                else:
+                    with step_timer.section("forward"):
                         out = model(
                             x,
                             y,
@@ -2119,28 +2210,18 @@ def train_one_model(
                             timing_collector=model_timer,
                         )
                         loss = out["loss"]
-            else:
-                with step_timer.section("forward"):
-                    out = model(
-                        x,
-                        y,
-                        rosa_memory_ids=mem,
-                        rosa_state_snapshots=state_snapshots,
-                        rosa_replay_ids=replay_ids.to(device) if replay_ids is not None else None,
-                        rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
-                        rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
-                        rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
-                        rosa_precomputed_source=pre_source,
-                        timing_collector=model_timer,
-                    )
-                    loss = out["loss"]
 
-            with step_timer.section("backward"):
-                loss.backward()
-            with step_timer.section("optim_step"):
-                if grad_clip > 0:
-                    optimizer_bundle.clip_grad_norm_(grad_clip)
-                optimizer_bundle.step()
+                with step_timer.section("backward"):
+                    (loss / grad_accum_steps).backward()
+
+            if should_step:
+                with step_timer.section("optim_step"):
+                    if grad_clip > 0:
+                        optimizer_bundle.clip_grad_norm_(grad_clip)
+                    optimizer_bundle.step()
+                with step_timer.section("optim_zero_grad"):
+                    optimizer_bundle.zero_grad(set_to_none=True)
+                global_step += 1
 
             mask = y.ne(-100)
             num = mask.sum().item()
@@ -2164,6 +2245,7 @@ def train_one_model(
                     row["timing_async_prefetch_depth"] = async_prefetch_stats.get("rosa_async_prefetch_depth", 0.0)
                     row["timing_async_prefetch_inflight"] = async_prefetch_stats.get("rosa_async_prefetch_inflight", 0.0)
                     row["timing_async_prefetch_queue_fill"] = async_prefetch_stats.get("rosa_async_prefetch_queue_fill", 0.0)
+                row["timing_grad_accum_steps"] = float(grad_accum_steps)
                 row["timing_step_ms"] = (
                     row.get("timing_data_wait_ms", 0.0)
                     + row.get("timing_optim_zero_grad_ms", 0.0)
@@ -2175,22 +2257,37 @@ def train_one_model(
                 timing_rows.append(row)
             next_batch_started_at = time.perf_counter()
 
-        train_loss = total_nll / max(1, total_tokens)
+        total_nll, total_tokens, correct, rosa_steps = reduce_scalar_sums(
+            [total_nll, float(total_tokens), float(correct), float(rosa_steps)],
+            ctx=distributed_context,
+            device=device,
+        )
+        if rosa_stats_sum:
+            rosa_stats_sum = reduce_sum_metric_dict(rosa_stats_sum, ctx=distributed_context, device=device)
+        train_loss = total_nll / max(1, int(total_tokens))
         train_metrics = {
             "epoch": epoch,
             "loss": train_loss,
             "ppl": safe_ppl(train_loss),
-            "token_acc": correct / max(1, total_tokens),
-            "valid_tokens": total_tokens,
+            "token_acc": correct / max(1, int(total_tokens)),
+            "valid_tokens": int(total_tokens),
         }
         if rosa_steps > 0:
             for k, v in rosa_stats_sum.items():
-                train_metrics[k] = v / rosa_steps
+                train_metrics[k] = v / float(rosa_steps)
         train_metrics.update(optimizer_bundle.stats())
         if collect_timing and timing_rows:
-            train_metrics.update(average_prefixed_metric(timing_rows, "timing_"))
+            timing_metrics = average_prefixed_metric(timing_rows, "timing_")
+            train_metrics.update(reduce_mean_metric_dict(timing_metrics, ctx=distributed_context, device=device))
 
-        val_metrics = evaluate(model, val_loader, device, pad_id, collect_timing=collect_timing)
+        val_metrics = evaluate(
+            model,
+            val_loader,
+            device,
+            pad_id,
+            collect_timing=collect_timing,
+            distributed_context=distributed_context,
+        )
         val_metrics["epoch"] = epoch
 
         history["train"].append(train_metrics)
@@ -2203,38 +2300,58 @@ def train_one_model(
         if "rosa_fire_coverage" in val_metrics:
             val_extra = f" | val fire_cov {val_metrics['rosa_fire_coverage']:.4f} fired_m {val_metrics['rosa_fired_avg_match_len']:.2f}"
 
-        print(
-            f"epoch {epoch:02d} | "
-            f"train loss {train_metrics['loss']:.4f} ppl {train_metrics['ppl']:.4f} acc {train_metrics['token_acc']:.4f}{train_extra} | "
-            f"val loss {val_metrics['loss']:.4f} ppl {val_metrics['ppl']:.4f} acc {val_metrics['token_acc']:.4f}{val_extra}"
-        )
-        if collect_timing:
-            timing_parts = [
-                f"step {train_metrics.get('timing_step_ms', 0.0):.2f}ms",
-                f"data {train_metrics.get('timing_data_wait_ms', 0.0):.2f}ms",
-                f"fwd {train_metrics.get('timing_forward_ms', 0.0):.2f}ms",
-                f"bwd {train_metrics.get('timing_backward_ms', 0.0):.2f}ms",
-                f"opt {train_metrics.get('timing_optim_step_ms', 0.0):.2f}ms",
-                f"tok/s {train_metrics.get('timing_tokens_per_s', 0.0):.1f}",
-            ]
-            if "timing_model_rosa_address_ms" in train_metrics:
-                timing_parts.extend(
-                    [
-                        f"rosa_addr {train_metrics.get('timing_model_rosa_address_ms', 0.0):.2f}ms",
-                        f"rosa_payload {train_metrics.get('timing_model_rosa_payload_ms', 0.0):.2f}ms",
-                        f"trunk {train_metrics.get('timing_model_trunk_ms', 0.0):.2f}ms",
-                        f"head {train_metrics.get('timing_model_head_ms', 0.0):.2f}ms",
-                    ]
-                )
-            if "timing_async_prefetch_wait_ms" in train_metrics:
-                timing_parts.extend(
-                    [
-                        f"async_wait {train_metrics.get('timing_async_prefetch_wait_ms', 0.0):.2f}ms",
-                        f"async_prep {train_metrics.get('timing_async_prefetch_prepare_ms', 0.0):.2f}ms",
-                        f"async_fill {train_metrics.get('timing_async_prefetch_queue_fill', 0.0):.2f}",
-                    ]
-                )
-            print("timing | " + " | ".join(timing_parts))
+        if distributed_context is None or distributed_context.is_main_process:
+            print(
+                f"epoch {epoch:02d} | "
+                f"train loss {train_metrics['loss']:.4f} ppl {train_metrics['ppl']:.4f} acc {train_metrics['token_acc']:.4f}{train_extra} | "
+                f"val loss {val_metrics['loss']:.4f} ppl {val_metrics['ppl']:.4f} acc {val_metrics['token_acc']:.4f}{val_extra}"
+            )
+            if collect_timing:
+                timing_parts = [
+                    f"step {train_metrics.get('timing_step_ms', 0.0):.2f}ms",
+                    f"data {train_metrics.get('timing_data_wait_ms', 0.0):.2f}ms",
+                    f"fwd {train_metrics.get('timing_forward_ms', 0.0):.2f}ms",
+                    f"bwd {train_metrics.get('timing_backward_ms', 0.0):.2f}ms",
+                    f"opt {train_metrics.get('timing_optim_step_ms', 0.0):.2f}ms",
+                    f"tok/s {train_metrics.get('timing_tokens_per_s', 0.0):.1f}",
+                    f"accum {grad_accum_steps}",
+                ]
+                if "timing_model_rosa_address_ms" in train_metrics:
+                    timing_parts.extend(
+                        [
+                            f"rosa_addr {train_metrics.get('timing_model_rosa_address_ms', 0.0):.2f}ms",
+                            f"rosa_payload {train_metrics.get('timing_model_rosa_payload_ms', 0.0):.2f}ms",
+                            f"trunk {train_metrics.get('timing_model_trunk_ms', 0.0):.2f}ms",
+                            f"head {train_metrics.get('timing_model_head_ms', 0.0):.2f}ms",
+                        ]
+                    )
+                if "timing_async_prefetch_wait_ms" in train_metrics:
+                    timing_parts.extend(
+                        [
+                            f"async_wait {train_metrics.get('timing_async_prefetch_wait_ms', 0.0):.2f}ms",
+                            f"async_prep {train_metrics.get('timing_async_prefetch_prepare_ms', 0.0):.2f}ms",
+                            f"async_fill {train_metrics.get('timing_async_prefetch_queue_fill', 0.0):.2f}",
+                        ]
+                    )
+                print("timing | " + " | ".join(timing_parts))
+        if checkpoint_manager is not None:
+            maybe_barrier(distributed_context)
+            checkpoint_manager.save(
+                epoch=epoch,
+                global_step=global_step,
+                history=history,
+                model_state=extract_model_state_dict(model),
+                optimizer_state=extract_optimizer_state(model, optimizer_bundle),
+                args={
+                    "lr": lr,
+                    "weight_decay": weight_decay,
+                    "grad_clip": grad_clip,
+                    "use_bf16": use_bf16,
+                    "grad_accum_steps": grad_accum_steps,
+                    "run_name": run_name,
+                },
+            )
+            maybe_barrier(distributed_context)
     return history
 
 
@@ -2264,6 +2381,134 @@ def build_model_config(args, tokenizer) -> ModelConfig:
         dropout=args.dropout,
         tie_word_embeddings=not args.no_tie_word_embeddings,
     )
+
+
+def build_rosa_model(args, cfg: ModelConfig, tokenizer) -> RosaFusedLM:
+    return RosaFusedLM(
+        cfg,
+        pad_id=tokenizer.pad_token_id,
+        rosa_backend=args.rosa_backend,
+        min_match_len=args.rosa_min_match_len,
+        inject_layers=args.rosa_inject_layers,
+        inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
+        rosa_scale=args.rosa_scale,
+        rosa_value_mode=args.rosa_value_mode,
+        rosa_sparse_value_training=args.rosa_sparse_value_training,
+        rosa_value_shards=args.rosa_value_shards,
+        rosa_seq_address_mode=args.rosa_seq_address_mode,
+        rosa_online_sam_impl=args.rosa_online_sam_impl,
+        use_context_gate=args.rosa_context_gate,
+        rosa_hot_cache_size=args.rosa_hot_cache_size,
+        special_ids=tokenizer.special_ids,
+        forbid_special_target=not args.rosa_allow_special_target,
+        use_match_len_gate=not args.rosa_disable_match_len_gate,
+    )
+
+
+def run_training_stage(
+    *,
+    stage_name: str,
+    model: nn.Module,
+    train_ds: Dataset,
+    val_ds: Dataset,
+    test_ds: Dataset,
+    args,
+    device: torch.device,
+    tokenizer,
+    distributed_context: Optional[DistributedContext],
+    enable_async_prefetch: bool,
+    resume_checkpoint: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, List[Dict[str, float]]], Dict[str, float], int]:
+    set_activation_checkpointing(model, args.activation_checkpointing)
+    wrapped_model = wrap_model_for_distributed(
+        model,
+        ctx=distributed_context or DistributedContext(
+            strategy="none",
+            backend="",
+            enabled=False,
+            rank=0,
+            local_rank=0,
+            world_size=1,
+            device=device,
+        ),
+        block_cls=DecoderBlock,
+        use_bf16=args.bf16,
+    ) if distributed_context is not None else model.to(device)
+
+    train_loader, val_loader, test_loader = build_dataloaders(
+        train_ds,
+        val_ds,
+        test_ds,
+        batch_size=args.batch_size,
+        pad_id=tokenizer.pad_token_id,
+        train_seed=args.seed,
+        distributed_context=distributed_context,
+    )
+
+    raw_model = unwrap_model(wrapped_model)
+    if enable_async_prefetch and hasattr(raw_model, "address_engine"):
+        train_loader = maybe_wrap_train_address_prefetch(
+            train_loader,
+            address_engine=raw_model.address_engine,
+            enabled=True,
+            max_workers=args.rosa_train_address_async_workers,
+            prefetch_batches=args.rosa_train_address_async_prefetch_batches,
+        )
+        val_loader = maybe_wrap_train_address_prefetch(
+            val_loader,
+            address_engine=raw_model.address_engine,
+            enabled=True,
+            max_workers=args.rosa_train_address_async_workers,
+            prefetch_batches=args.rosa_train_address_async_prefetch_batches,
+        )
+        test_loader = maybe_wrap_train_address_prefetch(
+            test_loader,
+            address_engine=raw_model.address_engine,
+            enabled=True,
+            max_workers=args.rosa_train_address_async_workers,
+            prefetch_batches=args.rosa_train_address_async_prefetch_batches,
+        )
+
+    checkpoint_manager = TrainingCheckpointManager(
+        out_dir=args.out_dir,
+        model_name=stage_name,
+        save_every_epochs=args.save_every_epochs,
+        is_main_process=(distributed_context is None or distributed_context.is_main_process),
+    )
+
+    history = train_one_model(
+        wrapped_model,
+        train_loader,
+        val_loader,
+        device,
+        pad_id=tokenizer.pad_token_id,
+        epochs=args.epochs,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
+        use_bf16=args.bf16,
+        collect_timing=args.train_timing,
+        grad_accum_steps=args.grad_accum_steps,
+        distributed_context=distributed_context,
+        checkpoint_manager=checkpoint_manager,
+        resume_state=resume_checkpoint,
+        resume_checkpoint=resume_checkpoint,
+        run_name=stage_name,
+    )
+    test_metrics = evaluate(
+        wrapped_model,
+        test_loader,
+        device,
+        tokenizer.pad_token_id,
+        collect_timing=args.train_timing,
+        distributed_context=distributed_context,
+    )
+
+    if distributed_context is None or distributed_context.is_main_process:
+        torch.save(extract_model_state_dict(wrapped_model), os.path.join(args.out_dir, f"{stage_name}.pt"))
+    param_count = count_params(unwrap_model(wrapped_model))
+    maybe_barrier(distributed_context)
+    return history, test_metrics, param_count
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -2330,7 +2575,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--grad_accum_steps", type=int, default=1,
+                        help="梯度累积步数；>1 时会在多个 micro-batch 后再执行一次 optimizer.step()。")
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--activation_checkpointing", action="store_true",
+                        help="对每个 DecoderBlock 启用 activation checkpointing，以时间换显存。")
+    parser.add_argument("--save_every_epochs", type=int, default=1,
+                        help="每隔多少个 epoch 保存一次训练 checkpoint；0 表示关闭。")
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="从某个训练 checkpoint 恢复。当前要求与 --run_models baseline|rosa_fused 搭配使用。")
+    parser.add_argument("--run_models", type=str, default="both", choices=["both", "baseline", "rosa_fused"],
+                        help="控制本次运行训练 baseline、rosa_fused，还是两者都训练。")
+    parser.add_argument("--distributed_strategy", type=str, default="none", choices=["none", "ddp", "fsdp"],
+                        help="分布式训练策略。服务器上推荐通过 torchrun 启动。")
+    parser.add_argument("--distributed_backend", type=str, default="",
+                        help="分布式 backend；为空时自动选择 cuda=nccl / cpu=gloo。")
     parser.add_argument("--arch_style", type=str, default="llama", choices=["llama", "qwen"])
     parser.add_argument("--dim", type=int, default=256)
     parser.add_argument("--n_layers", type=int, default=6)
@@ -2373,9 +2632,25 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
     recipe_meta = apply_rosa_recipe(args)
+    distributed_context = init_distributed_context(
+        strategy=args.distributed_strategy,
+        backend=(args.distributed_backend or None),
+    )
+    is_main_process = distributed_context.is_main_process
+    log = print if is_main_process else (lambda *a, **k: None)
 
     os.makedirs(args.out_dir, exist_ok=True)
     set_seed(args.seed)
+    if args.resume_from and args.run_models == "both":
+        raise ValueError("当前从 checkpoint 恢复时，请将 --run_models 设为 baseline 或 rosa_fused，而不是 both。")
+    resume_checkpoint = None
+    if args.resume_from:
+        resume_checkpoint = load_training_checkpoint(args.resume_from, map_location="cpu")
+        resume_model_name = resume_checkpoint.get("model_name")
+        if resume_model_name and resume_model_name != args.run_models:
+            raise ValueError(
+                f"--resume_from 对应的是 {resume_model_name}，但当前 --run_models={args.run_models}。请保持一致。"
+            )
 
     pretokenized_manifest = None
     effective_tokenizer_name_or_path = args.tokenizer_name_or_path
@@ -2521,178 +2796,126 @@ def main():
             },
         }
 
-    print(f"总文档数: {total_docs}")
-    print(f"train/val/test: {train_doc_count} / {val_doc_count} / {test_doc_count}")
-    print(f"架构风格: {args.arch_style}")
-    print(f"tokenizer: {effective_tokenizer_name_or_path or 'byte-fallback'}")
-    print(f"data format: {data_format_label}")
-    print(f"json text keys: {json_text_keys}")
+    log(f"总文档数: {total_docs}")
+    log(f"train/val/test: {train_doc_count} / {val_doc_count} / {test_doc_count}")
+    log(f"架构风格: {args.arch_style}")
+    log(f"tokenizer: {effective_tokenizer_name_or_path or 'byte-fallback'}")
+    log(f"data format: {data_format_label}")
+    log(f"json text keys: {json_text_keys}")
     if args.pretokenized_manifest:
-        print(f"pretokenized manifest: {args.pretokenized_manifest}")
-    print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
-    print(f"ROSA backend: {args.rosa_backend}")
-    print(f"ROSA memory mode: {args.rosa_memory_mode}")
-    print(f"ROSA train mode: {args.rosa_train_mode}")
-    print(f"ROSA recipe: {recipe_meta['name']}")
-    print(f"ROSA value mode: {args.rosa_value_mode}")
-    print(f"ROSA sparse value training: {args.rosa_sparse_value_training}")
-    print(f"ROSA value shards: {args.rosa_value_shards}")
-    print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
-    print(f"ROSA online sam impl: {args.rosa_online_sam_impl}")
-    print(f"ROSA context gate: {args.rosa_context_gate}")
-    print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
-    print(f"训练 timing: {args.train_timing}")
-    print(f"ROSA train address async: {not args.disable_rosa_train_address_async}")
-    print(f"ROSA train address cache: {args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache}")
-    print(f"ROSA train state snapshot: {args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot}")
-    print(f"ROSA train state snapshot interval: {args.rosa_train_state_snapshot_interval}")
-    print(f"ROSA train address async prefetch depth: {args.rosa_train_address_async_prefetch_batches}")
-    print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
+        log(f"pretokenized manifest: {args.pretokenized_manifest}")
+    log(f"run models: {args.run_models}")
+    log(f"distributed strategy: {args.distributed_strategy}")
+    log(f"world size: {distributed_context.world_size}")
+    log(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
+    log(f"ROSA backend: {args.rosa_backend}")
+    log(f"ROSA memory mode: {args.rosa_memory_mode}")
+    log(f"ROSA train mode: {args.rosa_train_mode}")
+    log(f"ROSA recipe: {recipe_meta['name']}")
+    log(f"ROSA value mode: {args.rosa_value_mode}")
+    log(f"ROSA sparse value training: {args.rosa_sparse_value_training}")
+    log(f"ROSA value shards: {args.rosa_value_shards}")
+    log(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
+    log(f"ROSA online sam impl: {args.rosa_online_sam_impl}")
+    log(f"ROSA context gate: {args.rosa_context_gate}")
+    log(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
+    log(f"训练 timing: {args.train_timing}")
+    log(f"activation checkpointing: {args.activation_checkpointing}")
+    log(f"grad accum steps: {args.grad_accum_steps}")
+    log(f"save every epochs: {args.save_every_epochs}")
+    log(f"ROSA train address async: {not args.disable_rosa_train_address_async}")
+    log(f"ROSA train address cache: {args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache}")
+    log(f"ROSA train state snapshot: {args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot}")
+    log(f"ROSA train state snapshot interval: {args.rosa_train_state_snapshot_interval}")
+    log(f"ROSA train address async prefetch depth: {args.rosa_train_address_async_prefetch_batches}")
+    log(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     if recipe_meta["applied"]:
-        print(f"ROSA recipe detail: {recipe_meta['description']}")
-    print(f"示例 train doc: {train_preview}")
+        log(f"ROSA recipe detail: {recipe_meta['description']}")
+    log(f"示例 train doc: {train_preview}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device: {device}")
+    device = distributed_context.device
+    log(f"device: {device}")
     if memory_meta.get("precomputed_doc_local_sam"):
-        print("ROSA 文档内历史: full doc prefix (SAM precompute)")
+        log("ROSA 文档内历史: full doc prefix (SAM precompute)")
     elif memory_meta.get("cached_online_seq_addresses"):
-        print("ROSA 文档内历史: full doc prefix (cached online_seq)")
+        log("ROSA 文档内历史: full doc prefix (cached online_seq)")
     elif memory_meta.get("state_snapshot_online_seq"):
-        print(f"ROSA 文档内历史: full doc prefix (snapshot + replay, interval={memory_meta['train_state_snapshot_interval']})")
+        log(f"ROSA 文档内历史: full doc prefix (snapshot + replay, interval={memory_meta['train_state_snapshot_interval']})")
     elif memory_meta.get("uses_full_doc_memory"):
-        print("ROSA 文档内历史: full doc prefix (online_seq)")
+        log("ROSA 文档内历史: full doc prefix (online_seq)")
     else:
-        print(f"ROSA 文档内 memory tokens: {memory_meta['doc_local_memory_tokens']}")
+        log(f"ROSA 文档内 memory tokens: {memory_meta['doc_local_memory_tokens']}")
     if memory_meta["rosa_memory_mode"] == "global_train":
-        print(f"ROSA 全局 train memory tokens: {memory_meta['global_train_memory_tokens']}")
-        print(f"训练集全局 memory 实际长度: {memory_meta['train_global_memory_size']}")
+        log(f"ROSA 全局 train memory tokens: {memory_meta['global_train_memory_tokens']}")
+        log(f"训练集全局 memory 实际长度: {memory_meta['train_global_memory_size']}")
     if memory_meta.get("precomputed_doc_local_sam"):
-        print("ROSA 特征: doc-local SAM 预计算模式")
+        log("ROSA 特征: doc-local SAM 预计算模式")
     elif memory_meta.get("cached_online_seq_addresses"):
-        print("ROSA 特征: 在线 sequence addressing（训练地址缓存）")
+        log("ROSA 特征: 在线 sequence addressing（训练地址缓存）")
     elif memory_meta.get("state_snapshot_online_seq"):
-        print("ROSA 特征: 在线 sequence addressing（训练状态快照 + 短 replay）")
+        log("ROSA 特征: 在线 sequence addressing（训练状态快照 + 短 replay）")
     else:
-        print(f"ROSA 特征: 在线 sequence addressing ({memory_meta['effective_train_mode']})")
+        log(f"ROSA 特征: 在线 sequence addressing ({memory_meta['effective_train_mode']})")
     cfg = build_model_config(args, tokenizer)
 
     set_seed(args.seed)
     baseline = BaseLM(cfg)
     set_seed(args.seed)
-    rosa_model = RosaFusedLM(
-        cfg,
-        pad_id=tokenizer.pad_token_id,
-        rosa_backend=args.rosa_backend,
-        min_match_len=args.rosa_min_match_len,
-        inject_layers=args.rosa_inject_layers,
-        inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
-        rosa_scale=args.rosa_scale,
-        rosa_value_mode=args.rosa_value_mode,
-        rosa_sparse_value_training=args.rosa_sparse_value_training,
-        rosa_value_shards=args.rosa_value_shards,
-        rosa_seq_address_mode=args.rosa_seq_address_mode,
-        rosa_online_sam_impl=args.rosa_online_sam_impl,
-        use_context_gate=args.rosa_context_gate,
-        rosa_hot_cache_size=args.rosa_hot_cache_size,
-        special_ids=tokenizer.special_ids,
-        forbid_special_target=not args.rosa_allow_special_target,
-        use_match_len_gate=not args.rosa_disable_match_len_gate,
-    )
+    rosa_model = build_rosa_model(args, cfg, tokenizer)
 
     base_params = count_params(baseline)
     rosa_params = count_params(rosa_model)
-    print(f"baseline params: {base_params:,}")
-    print(f"rosa params    : {rosa_params:,}")
+    log(f"baseline params: {base_params:,}")
+    log(f"rosa params    : {rosa_params:,}")
     if base_params == rosa_params:
-        print("参数量完全一致（ROSA 分支未引入额外可训练参数）。")
+        log("参数量完全一致（ROSA 分支未引入额外可训练参数）。")
     else:
-        print("注意：参数量不一致。")
+        log("注意：参数量不一致。")
 
-    print("\n==== 训练 baseline ====")
-    train_loader, val_loader, test_loader = build_dataloaders(
-        train_ds, val_ds, test_ds,
-        batch_size=args.batch_size,
-        pad_id=tokenizer.pad_token_id,
-        train_seed=args.seed,
-    )
-    base_hist = train_one_model(
-        baseline, train_loader, val_loader, device,
-        pad_id=tokenizer.pad_token_id,
-        epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
-        grad_clip=args.grad_clip, use_bf16=args.bf16,
-        collect_timing=args.train_timing,
-    )
-    base_test = evaluate(
-        baseline.to(device),
-        test_loader,
-        device,
-        tokenizer.pad_token_id,
-        collect_timing=args.train_timing,
-    )
+    executed_results: Dict[str, Any] = {}
+    if args.run_models in {"both", "baseline"}:
+        log("\n==== 训练 baseline ====")
+        set_seed(args.seed)
+        baseline = BaseLM(cfg)
+        base_hist, base_test, _ = run_training_stage(
+            stage_name="baseline",
+            model=baseline,
+            train_ds=train_ds,
+            val_ds=val_ds,
+            test_ds=test_ds,
+            args=args,
+            device=device,
+            tokenizer=tokenizer,
+            distributed_context=distributed_context,
+            enable_async_prefetch=False,
+            resume_checkpoint=(resume_checkpoint if args.run_models == "baseline" else None),
+        )
+        executed_results["baseline"] = {
+            "history": base_hist,
+            "test": base_test,
+        }
 
-    print("\n==== 训练 rosa-fused ====")
-    set_seed(args.seed)
-    train_loader, val_loader, test_loader = build_dataloaders(
-        train_ds, val_ds, test_ds,
-        batch_size=args.batch_size,
-        pad_id=tokenizer.pad_token_id,
-        train_seed=args.seed,
-    )
-    rosa_model = RosaFusedLM(
-        cfg,
-        pad_id=tokenizer.pad_token_id,
-        rosa_backend=args.rosa_backend,
-        min_match_len=args.rosa_min_match_len,
-        inject_layers=args.rosa_inject_layers,
-        inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
-        rosa_scale=args.rosa_scale,
-        rosa_value_mode=args.rosa_value_mode,
-        rosa_sparse_value_training=args.rosa_sparse_value_training,
-        rosa_value_shards=args.rosa_value_shards,
-        rosa_seq_address_mode=args.rosa_seq_address_mode,
-        rosa_online_sam_impl=args.rosa_online_sam_impl,
-        use_context_gate=args.rosa_context_gate,
-        rosa_hot_cache_size=args.rosa_hot_cache_size,
-        special_ids=tokenizer.special_ids,
-        forbid_special_target=not args.rosa_allow_special_target,
-        use_match_len_gate=not args.rosa_disable_match_len_gate,
-    )
-    rosa_train_loader = maybe_wrap_train_address_prefetch(
-        train_loader,
-        address_engine=rosa_model.address_engine,
-        enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
-        max_workers=args.rosa_train_address_async_workers,
-        prefetch_batches=args.rosa_train_address_async_prefetch_batches,
-    )
-    rosa_val_loader = maybe_wrap_train_address_prefetch(
-        val_loader,
-        address_engine=rosa_model.address_engine,
-        enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
-        max_workers=args.rosa_train_address_async_workers,
-        prefetch_batches=args.rosa_train_address_async_prefetch_batches,
-    )
-    rosa_test_loader = maybe_wrap_train_address_prefetch(
-        test_loader,
-        address_engine=rosa_model.address_engine,
-        enabled=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
-        max_workers=args.rosa_train_address_async_workers,
-        prefetch_batches=args.rosa_train_address_async_prefetch_batches,
-    )
-    rosa_hist = train_one_model(
-        rosa_model, rosa_train_loader, rosa_val_loader, device,
-        pad_id=tokenizer.pad_token_id,
-        epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
-        grad_clip=args.grad_clip, use_bf16=args.bf16,
-        collect_timing=args.train_timing,
-    )
-    rosa_test = evaluate(
-        rosa_model.to(device),
-        rosa_test_loader,
-        device,
-        tokenizer.pad_token_id,
-        collect_timing=args.train_timing,
-    )
+    if args.run_models in {"both", "rosa_fused"}:
+        log("\n==== 训练 rosa-fused ====")
+        set_seed(args.seed)
+        rosa_model = build_rosa_model(args, cfg, tokenizer)
+        rosa_hist, rosa_test, _ = run_training_stage(
+            stage_name="rosa_fused",
+            model=rosa_model,
+            train_ds=train_ds,
+            val_ds=val_ds,
+            test_ds=test_ds,
+            args=args,
+            device=device,
+            tokenizer=tokenizer,
+            distributed_context=distributed_context,
+            enable_async_prefetch=(args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
+            resume_checkpoint=(resume_checkpoint if args.run_models == "rosa_fused" else None),
+        )
+        executed_results["rosa_fused"] = {
+            "history": rosa_hist,
+            "test": rosa_test,
+        }
 
     summary = {
         "args": vars(args),
@@ -2746,25 +2969,27 @@ def main():
             "baseline": base_params,
             "rosa_fused": rosa_params,
         },
-        "baseline": {
-            "history": base_hist,
-            "test": base_test,
+        "distributed": {
+            "strategy": args.distributed_strategy,
+            "backend": distributed_context.backend,
+            "world_size": distributed_context.world_size,
+            "rank": distributed_context.rank,
         },
-        "rosa_fused": {
-            "history": rosa_hist,
-            "test": rosa_test,
-        },
+        "baseline": executed_results.get("baseline"),
+        "rosa_fused": executed_results.get("rosa_fused"),
     }
-    save_json(summary, os.path.join(args.out_dir, "comparison.json"))
-    torch.save(baseline.state_dict(), os.path.join(args.out_dir, "baseline.pt"))
-    torch.save(rosa_model.state_dict(), os.path.join(args.out_dir, "rosa_fused.pt"))
-
-    print("\n==== 最终对比 ====")
-    print(json.dumps({
-        "baseline_test": base_test,
-        "rosa_fused_test": rosa_test,
-    }, ensure_ascii=False, indent=2))
-    print(f"结果已保存到: {args.out_dir}")
+    if is_main_process:
+        save_json(summary, os.path.join(args.out_dir, "comparison.json"))
+        print("\n==== 最终对比 ====")
+        final_report = {}
+        if "baseline" in executed_results:
+            final_report["baseline_test"] = executed_results["baseline"]["test"]
+        if "rosa_fused" in executed_results:
+            final_report["rosa_fused_test"] = executed_results["rosa_fused"]["test"]
+        print(json.dumps(final_report, ensure_ascii=False, indent=2))
+        print(f"结果已保存到: {args.out_dir}")
+    maybe_barrier(distributed_context)
+    destroy_distributed_context(distributed_context)
 
 
 if __name__ == "__main__":

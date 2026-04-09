@@ -22,6 +22,18 @@
 - 当前进展：`memmap` 数据管线第一版已落地，当前已支持 manifest 构建、文档级二进制 token 存储、按需切片 dataset，以及 `train_qwen_llama_vs_rosa_v2.py --pretokenized_manifest ...` 直接训练
 - 当前进展：`per_layer ValueStore` 的稀疏活跃项训练第一版已落地，当前可通过 `--rosa_sparse_value_training` 或 `--rosa_recipe online_v2_sparse` 启用；训练期会把普通参数交给 `AdamW`，把 per-layer value table 交给 `SparseAdam`
 - 当前进展：本地行分片 `ValueStore` 第一版已落地，当前可通过 `--rosa_value_shards N` 或 `--rosa_recipe online_v2_sparse_sharded` 启用；每层 value table 可按词表行切成多个本地 shard，并输出当前 batch 的活跃分片统计
+- 当前进展：大模型训练基础设施第一版已落地，当前已支持：
+  - `--activation_checkpointing`
+  - `--grad_accum_steps`
+  - `--save_every_epochs`
+  - `--resume_from`
+  - `--run_models baseline|rosa_fused|both`
+- 当前进展：分布式训练第一版已落地，当前已支持：
+  - `--distributed_strategy ddp|fsdp`
+  - 分布式 sampler
+  - 指标归约
+  - DDP/FSDP 下的 checkpoint/save-resume v1
+  - 当前 `FSDP` 首版暂不支持 sparse ValueStore 训练
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -204,9 +216,13 @@
 ## 下一任务
 
 1. 规模化阶段继续推进 `ValueStore`，优先从“本地行分片”走向真正的跨卡 / host-memory 分片。
-2. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
-3. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
-4. 训练性能优化后续优先项：
+2. 分布式训练下一步优先做：
+   - ZeRO 路线
+   - FSDP checkpoint/state-dict 的更高效形态
+   - sparse ValueStore 与分布式训练的兼容方案
+3. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
+4. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
+5. 训练性能优化后续优先项：
    - 地址支路 CPU worker 前移 / next-batch overlap（继续作为默认主线优化；当前 queue depth 可调，但默认先保持 `1`）
    - `online_sam` sequence 快路径进一步下沉到 CUDA/Triton（C++ CPU v1 已完成）
    - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔（更偏 sync / 无 async / 大数据场景）

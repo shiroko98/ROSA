@@ -134,6 +134,38 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - 这是“单机本地行分片 v1”
   - 适合继续放大词表 / per-layer table 的单机训练实验
   - 还不是跨卡 / host-memory / all-to-all 的最终规模化方案
+  - 与 `FSDP` 的关系：
+    - 这类“本地行分片”本身不会破坏 FSDP
+    - 但它也不会自动变成跨卡 all-to-all 表
+    - 当前首版 `FSDP` 暂不支持和 `--rosa_sparse_value_training` 一起用
+
+## Scale Training Infra
+
+- 开关：
+  - `--activation_checkpointing`
+  - `--grad_accum_steps`
+  - `--save_every_epochs`
+  - `--resume_from`
+  - `--run_models baseline|rosa_fused|both`
+- 当前作用：
+  - 逐层 activation checkpointing，降低大模型训练显存占用
+  - 梯度累积，支持小 batch micro-step + 大等效 batch
+  - epoch 级 checkpoint/save-resume
+  - 可只训练 `rosa_fused`，避免服务器上顺带再跑一遍 baseline
+
+## Distributed Training
+
+- 开关：
+  - `--distributed_strategy ddp|fsdp`
+  - `--distributed_backend gloo|nccl`
+- 当前作用：
+  - 支持用 `torchrun` 或显式 `RANK/WORLD_SIZE/MASTER_*` 环境变量启动
+  - 自动接入 `DistributedSampler`
+  - 训练/验证/测试指标做跨 rank 归约
+  - DDP/FSDP 路径都支持 checkpoint/save-resume v1
+- 当前边界：
+  - `FSDP` 首版暂不支持 `--rosa_sparse_value_training`
+  - 当前 FSDP checkpoint 仍是 full-state 保存，适合先跑通，不是最终高效形态
 
 ## Context-Aware Gate
 

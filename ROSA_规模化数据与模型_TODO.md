@@ -22,8 +22,8 @@
 | 已完成 | P0 | 预分词 + `memmap`/二进制数据集管线 | 可复用的数据构建脚本、manifest、训练加载器 | 不再需要把全部 token/sample 常驻 Python list；`doc_local + online_seq` 可直接从预分词二进制数据训练 | 已新增构建脚本、manifest、训练入口 |
 | 已完成 | P1 | 文档级索引与按需切片 | 文档偏移、长度、chunk 索引按需读取 | dataset `__getitem__` 动态切片，不复制大块 token | `MemmapDocChunkDataset` 已落地 |
 | 进行中 | P1 | 稀疏 / 分片 `ValueStore` | 活跃项 gather + 可扩展表存储 | `per_layer` 不再线性吃完整词表乘层数的参数量 | 已完成 sparse active-row training v1 + 本地行分片 v1，跨卡分片仍未开始 |
-| 未开始 | P1 | 大模型训练基础设施 | activation checkpointing / 更稳 checkpoint / 梯度累积策略 | 大模型训练不中断、可恢复、显存可控 | 之后再接 FSDP/ZeRO |
-| 未开始 | P2 | 分布式训练 | FSDP/ZeRO 训练路径 | 单机多卡和更大模型训练可用 | 不与当前小实验入口耦死 |
+| 已完成 | P1 | 大模型训练基础设施 | activation checkpointing / 更稳 checkpoint / 梯度累积策略 | 大模型训练不中断、可恢复、显存可控 | v1 已落地：逐层 activation checkpointing、epoch checkpoint/save-resume、grad accumulation、单模型 stage 运行 |
+| 进行中 | P2 | 分布式训练 | FSDP/ZeRO 训练路径 | 单机多卡和更大模型训练可用 | DDP/FSDP v1 已落地，ZeRO 尚未开始 |
 | 未开始 | P2 | 地址引擎 GPU/Triton/CUDA 实现 | `[B, T]` 训练 sequence addressing fused kernel | 训练期地址生成不再主要受 CPU 约束 | 优先 sequence 路径，不先改 decode step |
 | 未开始 | P2 | 训练数据预取与拷贝流水线 | 数据读取、地址准备、Host->Device 拷贝分阶段 | 数据管线不再拖慢 GPU 利用率 | 与训练 timing 打通 |
 | 未开始 | P2 | 状态快照磁盘化 / 轻量化 | 可落盘的 snapshot 索引与恢复 | 长文档下恢复更快、占用更低 | 仅在需要 full-history 时启用 |
@@ -92,6 +92,21 @@
   - 活跃项 all-to-all
   - 磁盘 / host memory 大表
   - 按分片独立放置到不同 device / host 的真正分布式表
+- 当前大模型训练基础设施已支持：
+  - `--activation_checkpointing`
+  - `--grad_accum_steps`
+  - `--save_every_epochs`
+  - `--resume_from`
+  - `--run_models baseline|rosa_fused|both`
+- 当前分布式训练已支持：
+  - `--distributed_strategy ddp|fsdp`
+  - `DistributedSampler`
+  - 分布式训练/评估指标归约
+  - FSDP/DDP 下的 checkpoint/save-resume v1
+- 当前分布式训练已知边界：
+  - `FSDP` 首版暂不支持 `--rosa_sparse_value_training`
+  - 当前“本地行分片 ValueStore”不会自动变成跨卡 all-to-all 表
+  - `FSDP` 首版 checkpoint 仍是 full-state 保存，适合先跑通 8 卡，不是最终高效形态
 
 ## 当前结论
 
@@ -99,5 +114,5 @@
 - 当前的 `DocChunkDataset` 更适合中小规模实验，不适合大数据长期训练。
 - “预分词 + `memmap`/二进制数据集管线”第一版已经完成，下一优先级转向：
   - 分布式 / host-memory `ValueStore`
-  - 大模型训练基础设施
   - 地址引擎 GPU/Triton/CUDA 实现
+  - 更正式的 ZeRO / host-memory 分布式 memory 表
