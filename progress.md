@@ -33,6 +33,7 @@
 - [x] 在线主线 P2: `online_sam` sequence 快路径
 - [x] 在线主线 P2: `online_v2` per-layer recipe 主线化
 - [x] 在线主线 P2: 文档级状态快照与 chunk 起点恢复 v1
+- [x] 在线主线 P2: snapshot interval sweep（sync/async）
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -204,6 +205,24 @@
 - `DocChunkDataset` 现可在不复制整段 `rosa_precomputed_*` 的情况下，为每个 chunk 动态提供：
   - `rosa_state_snapshot`
   - `rosa_replay_ids`
+- 新增 `sweep_rosa_snapshot_intervals.py`
+- 当前可自动比较：
+  - `sync / async`
+  - `no_snapshot / snapshot_64 / 128 / 256 / 512`
+  - 并汇总输出 `snapshot_sweep_summary.json`
+- 当前第一轮 sweep 结果（`16/4/4 docs`, `online_v1 + fast`）：
+  - sync:
+    - no snapshot：`step ~64.04ms`，`rosa_addr ~30.50ms`
+    - snapshot 64：`step ~48.56ms`，`rosa_addr ~15.60ms`
+    - snapshot 128：`step ~48.83ms`，`rosa_addr ~15.77ms`
+    - snapshot 256：`step ~50.47ms`，`rosa_addr ~16.96ms`
+    - snapshot 512：`step ~50.90ms`，`rosa_addr ~17.41ms`
+  - async:
+    - no snapshot：`step ~36.51ms`，`rosa_addr ~0.22ms`
+    - snapshot 64/128/256/512：`step ~37.38~38.55ms`，`rosa_addr ~0.23~0.28ms`
+  - 当前结论：
+    - `snapshot` 对 sync 路径收益明确，`64~128` 区间最好
+    - async 已经把地址等待几乎完全隐藏，在这个小配置上再叠 `snapshot` 没有额外收益
 
 ## 自我验证记录
 
@@ -241,6 +260,9 @@
 - `conda run -n model python -m unittest tests.test_rosa_training_snapshot tests.test_train_qwen_llama_vs_rosa_v2`
 - `conda run -n model python -m py_compile rosa_addressing.py rosa_training_snapshot.py rosa_train_async.py train_qwen_llama_vs_rosa_v2.py tests\\test_rosa_training_snapshot.py tests\\test_train_qwen_llama_vs_rosa_v2.py`
 - `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v1 --enable_rosa_train_state_snapshot --rosa_train_state_snapshot_interval 256 --disable_rosa_train_address_async --train_timing`
+- `conda run -n model python -m unittest tests.test_sweep_rosa_snapshot_intervals`
+- `conda run -n model python -m py_compile sweep_rosa_snapshot_intervals.py tests\\test_sweep_rosa_snapshot_intervals.py`
+- `conda run -n model python sweep_rosa_snapshot_intervals.py ... --snapshot_intervals \"64,128,256,512\" --modes \"sync,async\"`
 - 结果：本次改动相关的 targeted tests 已通过，`profile` smoke 也已通过；`unittest discover -s tests` 在当前 Windows 环境下仍会遇到独立的 tempfile 权限噪声，需要与本次代码逻辑问题区分看待。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。

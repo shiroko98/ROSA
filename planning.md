@@ -160,15 +160,28 @@
   - snapshot interval 256：`rosa_addr ~21.08ms`，`step ~55.65ms`
   - test 指标保持一致（`loss 16.5346`，`token_acc 0.04419`）
   - 说明 snapshot + replay v1 已经在不改 full-history 语义的前提下，进一步压低了同步地址开销
+- 小型 sweep 实验（`16/4/4 docs`, `online_v1 + fast`）当前结果：
+  - sync:
+    - no snapshot：`step ~64.04ms`，`rosa_addr ~30.50ms`
+    - snapshot 64：`step ~48.56ms`，`rosa_addr ~15.60ms`
+    - snapshot 128：`step ~48.83ms`，`rosa_addr ~15.77ms`
+    - snapshot 256：`step ~50.47ms`，`rosa_addr ~16.96ms`
+    - snapshot 512：`step ~50.90ms`，`rosa_addr ~17.41ms`
+  - async:
+    - no snapshot：`step ~36.51ms`，`rosa_addr ~0.22ms`
+    - snapshot 64/128/256/512：`step ~37.38~38.55ms`，`rosa_addr ~0.23~0.28ms`
+  - 当前结论：
+    - snapshot 对 sync 路径收益明确，`64~128` 区间最好
+    - async 已经把地址等待几乎完全隐藏，在这个小配置上再叠 snapshot 没有额外收益
 
 ## 下一任务
 
 1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
 2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
 3. 训练性能优化后续优先项：
-   - 地址支路 CPU worker 前移 / next-batch overlap
+   - 地址支路 CPU worker 前移 / next-batch overlap（继续作为默认主线优化）
    - `online_sam` sequence 快路径进一步下沉到 C++/CUDA/Triton
-   - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔
+   - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔（更偏 sync / 无 async / 大数据场景）
    - memory window / bookmark（保留为可选工程折中，而非默认主线）
 4. 当前已用 `--train_timing` 验证并完成两轮修复：
    - async overlap 把训练中等待地址的成本压到近零

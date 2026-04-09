@@ -267,6 +267,18 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `snapshot interval 256`：`rosa_addr ~21.08ms`，`step ~55.65ms`
   - test 指标保持一致：`loss 16.5346`，`token_acc 0.04419`
   - 说明 `snapshot + replay v1` 已经能在保留 full-history 语义的前提下，继续压低同步地址成本
+- 当前一次 `snapshot interval sweep` 小实验（`16/4/4 docs`, `online_v1 + fast`）：
+  - 脚本：`sweep_rosa_snapshot_intervals.py`
+  - 汇总：`outputs/snapshot_interval_sweep_smoke/snapshot_sweep_summary.json`
+  - sync 最优：`snapshot 64`
+    - `step ~48.56ms`
+    - `rosa_addr ~15.60ms`
+  - async 最优：`no snapshot`
+    - `step ~36.51ms`
+    - `rosa_addr ~0.22ms`
+  - 当前建议：
+    - 主线默认仍优先保留 `async overlap`
+    - `snapshot` 更适合作为 sync / 无 async / 长前缀恢复场景下的额外优化
 
 ## VS Code Launch
 

@@ -22,6 +22,7 @@
 - 已完成：训练期地址支路异步化 / overlap（默认主线已启用 next-batch 地址异步预取）
 - 已完成第一版：`online_sam` sequence 快路径，默认通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`
 - 已完成第一版：训练期 `snapshot + 短 replay`，支持文档级稀疏 state snapshot 与 chunk 起点恢复
+- 已完成第一轮 sweep：小型 `snapshot interval` 对比显示，`snapshot` 对同步地址路径收益明显；在已开启 async overlap 的小配置上，额外收益接近于零
 - 仍保留：`--rosa_online_sam_impl stateful` 作为逐 token SAM 回归/对照实现
 - 后续真正的高性能目标不再是 Python 级“快一点”，而是进一步下沉到 C++/CUDA/Triton 等更低开销实现
 
