@@ -21,6 +21,7 @@
 
 - 已完成：训练期地址支路异步化 / overlap（默认主线已启用 next-batch 地址异步预取）
 - 已完成第一版：`online_sam` sequence 快路径，默认通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`
+- 已完成第一版：训练期 `snapshot + 短 replay`，支持文档级稀疏 state snapshot 与 chunk 起点恢复
 - 仍保留：`--rosa_online_sam_impl stateful` 作为逐 token SAM 回归/对照实现
 - 后续真正的高性能目标不再是 Python 级“快一点”，而是进一步下沉到 C++/CUDA/Triton 等更低开销实现
 
@@ -32,9 +33,9 @@
 
 ## 当前统计
 
-- `已完成`：10 项
-- `进行中`：3 项
-- `未开始`：8 项
+ - `已完成`：10 项
+ - `进行中`：4 项
+ - `未开始`：7 项
 
 ## 性能优化待办补充
 
@@ -91,7 +92,7 @@
 | 进行中（已完成 fast v1） | P2 | 在线 SAM sequence 路径下沉到高性能实现 | 比 `SuffixAutomatonRosaState.update_one()` 更快的训练期 sequence 地址引擎 | 训练期 `online_seq + online_sam` 不再主要耗时在 Python 逐 token 状态推进；与现有 step/session 语义保持一致 | 若训练 sequence 路径与推理 step 路径语义漂移，会破坏一致性 | 保留 step/session 的真实在线 SAM；单独为 `forward_seq()` 实现 array-backed / fused SAM sequence 版本，并做逐位置一致性回归 |
 | 进行中（已完成 overlap v1） | P2 | 训练期地址支路异步化 / overlap | 不改变 `online_seq` 语义的训练加速方案 | 训练 step 中地址生成不再完全阻塞主干；能比较同步 / worker 前移 / next-batch overlap 三种模式 | 若重新退化成离线持久 precompute，会削弱在线主线的一致性 | 保持 `AddressEngine.forward_seq()` 为主线定义；优先尝试 CPU worker 临时预取本 step address，再尝试与 GPU 主干重叠计算 next batch address |
 | 未开始 | P2 | 训练期 memory 范围控制与 bookmark/window 实验 | 不依赖 full doc prefix 的轻量在线训练配置 | 在较短 memory window 下维持大部分收益，同时显著降低地址构建规模 | window 过短会伤害匹配覆盖率 | 先支持固定 tail window，再实验 bookmark / anchor / canonicalization，比较 coverage / speed / loss |
-| 未开始 | P2 | 文档级状态快照与 chunk 起点增量恢复 | 比“整文档地址全缓存”更省内存的训练执行模式 | 大数据集下无需为每个 sample 复制 `rosa_precomputed_*`，可通过起点快照 + 短 replay 恢复在线状态 | snapshot/restore 的正确性和 clone 成本需要严格验证 | 先做 chunk 起点 `RosaStateSnapshot` 缓存，再尝试“每 K token 一个 snapshot + 局部 replay”的折中方案 |
+| 进行中（已完成 sparse snapshot + replay v1） | P2 | 文档级状态快照与 chunk 起点增量恢复 | 比“整文档地址全缓存”更省内存的训练执行模式 | 大数据集下无需为每个 sample 复制 `rosa_precomputed_*`，可通过起点快照 + 短 replay 恢复在线状态 | snapshot/restore 的正确性和 clone 成本需要严格验证 | v1 已支持文档级稀疏 snapshot、batch 级 restore 与 chunk 起点 replay；后续继续做更轻量序列化、磁盘化与更细粒度间隔策略 |
 | 未开始 | P2 | ROSA × Engram 融合路线 | 文档 memory 与参数化 memory 共存的 hybrid 方案 | 同时支持 `external doc memory` 与 `learned memory table` 两条 value 分支，并可由 gate 融合 | 两类 memory 的优先级与冲突处理复杂 | 先实现 `doc memory branch + learned branch` 的双分支 payload；再研究共享 gate / branch-specific gate |
 | 未开始 | P3 | 服务化 request 生命周期与混批 | 面向 serving 的 ROSA 运行时 | `RosaState`、prefetch、cache、bookmark 在并发请求下生命周期稳定 | 与现有推理框架集成难度高 | 先设计 request API、状态快照、回收与 fallback 策略 |
 

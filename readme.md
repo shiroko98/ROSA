@@ -87,6 +87,9 @@ git log --oneline -5
   - `doc_local` / `global_train` 在线模式默认提供 `full doc prefix` 左侧 memory，用于和旧 reference 路径对齐
   - 对 `online_exact` / `online_sam`，当前训练阶段默认回到逐 batch 在线构建地址
   - 如需显式启用“训练地址缓存”，可加：`--enable_rosa_train_address_cache`
+  - 如需启用“训练状态快照 + 短 replay”，可加：
+    - `--enable_rosa_train_state_snapshot`
+    - `--rosa_train_state_snapshot_interval 256`
   - 当前训练默认会开启“地址异步预取”：主干训练当前 batch 时，CPU 后台准备下一 batch 的在线地址
   - 如需关闭，可加：`--disable_rosa_train_address_async`
   - 当前训练默认推荐：`--rosa_online_sam_impl fast`
@@ -259,6 +262,11 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `online_v1`: `test loss 16.5346`，`token_acc 0.04419`，`step ~35.50ms`
   - `online_v2`: `test loss 16.5328`，`token_acc 0.04602`，`step ~74.60ms`
   - 说明 per-layer ValueStore 有轻微效果增益，但当前训练成本上升明显
+- 当前一次 MiniPile 同步训练小实验（`32/8/8 docs`, `fast + sync`）：
+  - full prefix：`rosa_addr ~27.00ms`，`step ~59.36ms`
+  - `snapshot interval 256`：`rosa_addr ~21.08ms`，`step ~55.65ms`
+  - test 指标保持一致：`loss 16.5346`，`token_acc 0.04419`
+  - 说明 `snapshot + replay v1` 已经能在保留 full-history 语义的前提下，继续压低同步地址成本
 
 ## VS Code Launch
 

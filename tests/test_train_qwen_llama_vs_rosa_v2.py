@@ -873,6 +873,61 @@ class TrainAddressAsyncLoaderTests(unittest.TestCase):
         self.assertEqual(out["rosa_address_source_online_seq"], 1.0)
         self.assertTrue(torch.isfinite(out["loss"]))
 
+    def test_async_loader_can_prepare_addresses_from_state_snapshots(self):
+        docs = [[1, 2, 1, 2, 3, 4, 1]]
+        train_ds, _, _, meta = rosa_mod.build_chunk_datasets(
+            docs,
+            docs,
+            docs,
+            seq_len=2,
+            pad_id=0,
+            stride=1,
+            rosa_memory_tokens=8,
+            rosa_memory_mode="doc_local",
+            rosa_global_memory_tokens=0,
+            rosa_backend="sam",
+            rosa_train_mode="online_seq",
+            rosa_seq_address_mode="online_sam",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+            enable_train_state_snapshot=True,
+            train_state_snapshot_interval=2,
+        )
+        self.assertTrue(meta["state_snapshot_online_seq"])
+        loader, _, _ = rosa_mod.build_dataloaders(
+            train_ds,
+            train_ds,
+            train_ds,
+            batch_size=1,
+            pad_id=0,
+            train_seed=2026,
+        )
+        model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            min_match_len=2,
+            inject_layers=1,
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=False,
+        )
+        wrapped = rosa_mod.maybe_wrap_train_address_prefetch(
+            loader,
+            address_engine=model.address_engine,
+            enabled=True,
+            max_workers=1,
+        )
+        batch = next(iter(wrapped))
+        direct = model.compute_rosa_address_batch(
+            batch["input_ids"],
+            rosa_state_snapshots=batch["rosa_state_snapshots"],
+            rosa_replay_ids=batch["rosa_replay_ids"],
+        )
+        self.assertTrue(torch.equal(batch["rosa_precomputed_ids"], direct.addr_ids))
+        self.assertTrue(torch.equal(batch["rosa_precomputed_match_lens"], direct.fired_match_lens))
+        self.assertTrue(torch.equal(batch["rosa_precomputed_raw_best_lens"], direct.raw_match_lens))
+        self.assertEqual(batch["rosa_precomputed_source"], "seq:online_sam:snapshot")
+
 
 class GlobalTrainMemoryTests(unittest.TestCase):
     def test_doc_local_sam_precompute_uses_full_doc_history(self):
@@ -1084,6 +1139,64 @@ class GlobalTrainMemoryTests(unittest.TestCase):
         )
         self.assertTrue(meta["cached_online_seq_addresses"])
         self.assertIn("rosa_precomputed_ids", train_ds[2])
+
+    def test_doc_local_online_seq_can_enable_state_snapshots(self):
+        docs = [[1, 2, 1, 2, 3, 4, 1]]
+        train_ds, _, _, meta = rosa_mod.build_chunk_datasets(
+            docs,
+            docs,
+            docs,
+            seq_len=2,
+            pad_id=0,
+            stride=1,
+            rosa_memory_tokens=1,
+            rosa_memory_mode="doc_local",
+            rosa_global_memory_tokens=0,
+            rosa_backend="sam",
+            rosa_train_mode="online_seq",
+            rosa_seq_address_mode="online_sam",
+            rosa_min_match_len=2,
+            special_ids=set(),
+            forbid_special_target=True,
+            enable_train_state_snapshot=True,
+            train_state_snapshot_interval=2,
+        )
+        self.assertTrue(meta["state_snapshot_online_seq"])
+        self.assertEqual(meta["train_state_snapshot_interval"], 2)
+        sample = train_ds[3]
+        self.assertEqual(sample["rosa_memory_ids"].tolist(), [])
+        self.assertIn("rosa_state_snapshot", sample)
+        self.assertIn("rosa_replay_ids", sample)
+        cfg = rosa_mod.ModelConfig(
+            vocab_size=16,
+            max_seq_len=4,
+            dim=8,
+            n_layers=1,
+            n_heads=2,
+            n_kv_heads=2,
+            intermediate_size=16,
+        )
+        model = rosa_mod.RosaFusedLM(
+            cfg,
+            pad_id=0,
+            rosa_backend="sam",
+            min_match_len=2,
+            inject_layers=1,
+            inject_layer_ids=[0],
+            rosa_seq_address_mode="online_sam",
+            use_context_gate=False,
+        )
+        direct = model.compute_rosa_address_batch(
+            sample["input_ids"].unsqueeze(0),
+            rosa_state_snapshots=[sample["rosa_state_snapshot"]],
+            rosa_replay_ids=sample["rosa_replay_ids"].unsqueeze(0),
+        )
+        reference = model.compute_rosa_address_batch(
+            sample["input_ids"].unsqueeze(0),
+            rosa_memory_ids=torch.tensor([[1, 2, 1]], dtype=torch.long),
+        )
+        self.assertTrue(torch.equal(direct.addr_ids, reference.addr_ids))
+        self.assertTrue(torch.equal(direct.raw_match_lens, reference.raw_match_lens))
 
     def test_doc_local_sam_builds_precomputed_chunk_features_in_reference_mode(self):
         docs = [[1, 2, 1, 2, 3]]

@@ -1,5 +1,6 @@
 
 import argparse
+from bisect import bisect_right
 import glob
 import gzip
 import json
@@ -42,6 +43,7 @@ from rosa_session import RosaBatchSession
 from rosa_timing import TimingCollector
 from rosa_train_async import maybe_wrap_train_address_prefetch
 from rosa_training_cache import build_sequence_online_precomputed_rosa
+from rosa_training_snapshot import build_sequence_online_state_snapshots
 
 try:
     from transformers import AutoTokenizer
@@ -402,6 +404,7 @@ class DocChunkDataset(Dataset):
         doc_global_prefixes: Optional[Sequence[Sequence[int]]] = None,
         shared_global_memory: Optional[Sequence[int]] = None,
         doc_precomputed_rosa: Optional[Sequence[Dict[str, Sequence[int]]]] = None,
+        doc_state_snapshots: Optional[Sequence[Dict[str, Sequence[Any]]]] = None,
         precomputed_source: Optional[str] = None,
     ):
         self.seq_len = seq_len
@@ -410,11 +413,17 @@ class DocChunkDataset(Dataset):
         self.global_memory_tokens = global_memory_tokens
         self.full_doc_memory = full_doc_memory
         self.samples: List[Dict[str, List[int]]] = []
+        self.docs_tokens = [list(ids) for ids in docs_tokens]
+        self.doc_state_snapshots = doc_state_snapshots
         stride = stride or seq_len
         if doc_global_prefixes is not None and len(doc_global_prefixes) != len(docs_tokens):
             raise ValueError("doc_global_prefixes 长度必须与 docs_tokens 一致。")
         if doc_precomputed_rosa is not None and len(doc_precomputed_rosa) != len(docs_tokens):
             raise ValueError("doc_precomputed_rosa 长度必须与 docs_tokens 一致。")
+        if doc_state_snapshots is not None and len(doc_state_snapshots) != len(docs_tokens):
+            raise ValueError("doc_state_snapshots 长度必须与 docs_tokens 一致。")
+        if doc_precomputed_rosa is not None and doc_state_snapshots is not None:
+            raise ValueError("doc_precomputed_rosa 与 doc_state_snapshots 不能同时启用。")
 
         global_shared_tail = tail_tokens(shared_global_memory or [], global_memory_tokens)
 
@@ -442,8 +451,17 @@ class DocChunkDataset(Dataset):
                 sample: Dict[str, List[int]] = {
                     "input_ids": x,
                     "labels": y,
-                    "rosa_memory_ids": mem,
+                    "rosa_memory_ids": mem if doc_state_snapshots is None else [],
                 }
+                if doc_state_snapshots is not None:
+                    snapshot_entry = doc_state_snapshots[doc_idx]
+                    positions = list(snapshot_entry["positions"])
+                    anchor_idx = max(0, bisect_right(positions, start) - 1)
+                    anchor_pos = positions[anchor_idx]
+                    sample["rosa_snapshot_doc_idx"] = doc_idx
+                    sample["rosa_snapshot_anchor_idx"] = anchor_idx
+                    sample["rosa_snapshot_anchor_pos"] = anchor_pos
+                    sample["rosa_chunk_start"] = start
                 if doc_precomputed_rosa is not None:
                     pre = doc_precomputed_rosa[doc_idx]
                     pre_ids = list(pre["rosa_ids"][start:start + seq_len])
@@ -473,6 +491,17 @@ class DocChunkDataset(Dataset):
             "labels": torch.tensor(sample["labels"], dtype=torch.long),
             "rosa_memory_ids": torch.tensor(sample["rosa_memory_ids"], dtype=torch.long),
         }
+        if "rosa_snapshot_doc_idx" in sample:
+            doc_idx = int(sample["rosa_snapshot_doc_idx"])
+            anchor_idx = int(sample["rosa_snapshot_anchor_idx"])
+            anchor_pos = int(sample["rosa_snapshot_anchor_pos"])
+            chunk_start = int(sample["rosa_chunk_start"])
+            snapshot_entry = self.doc_state_snapshots[doc_idx]
+            out["rosa_state_snapshot"] = snapshot_entry["snapshots"][anchor_idx]
+            out["rosa_replay_ids"] = torch.tensor(
+                self.docs_tokens[doc_idx][anchor_pos:chunk_start],
+                dtype=torch.long,
+            )
         if "rosa_precomputed_ids" in sample:
             out["rosa_precomputed_ids"] = torch.tensor(sample["rosa_precomputed_ids"], dtype=torch.long)
             out["rosa_precomputed_match_lens"] = torch.tensor(sample["rosa_precomputed_match_lens"], dtype=torch.long)
@@ -497,6 +526,18 @@ def make_collate_fn(pad_id: int):
                 if cur.numel() > 0:
                     mem[i, -cur.numel():] = cur
         out = {"input_ids": xs, "labels": ys, "rosa_memory_ids": mem}
+        if "rosa_state_snapshot" in batch[0]:
+            max_replay = max((b["rosa_replay_ids"].numel() for b in batch), default=0)
+            if max_replay == 0:
+                replay = torch.empty((len(batch), 0), dtype=torch.long)
+            else:
+                replay = torch.full((len(batch), max_replay), pad_id, dtype=torch.long)
+                for i, b in enumerate(batch):
+                    cur = b["rosa_replay_ids"]
+                    if cur.numel() > 0:
+                        replay[i, -cur.numel():] = cur
+            out["rosa_state_snapshots"] = [b["rosa_state_snapshot"] for b in batch]
+            out["rosa_replay_ids"] = replay
         if "rosa_precomputed_ids" in batch[0]:
             out["rosa_precomputed_ids"] = torch.stack([b["rosa_precomputed_ids"] for b in batch], dim=0)
             out["rosa_precomputed_match_lens"] = torch.stack(
@@ -553,6 +594,8 @@ def build_chunk_datasets(
     special_ids: Optional[set],
     forbid_special_target: bool,
     enable_train_address_cache: bool = False,
+    enable_train_state_snapshot: bool = False,
+    train_state_snapshot_interval: int = 0,
 ):
     if rosa_train_mode not in {"online_seq", "reference_precompute"}:
         raise ValueError(f"未知 rosa_train_mode: {rosa_train_mode}")
@@ -570,6 +613,14 @@ def build_chunk_datasets(
         and uses_full_doc_memory
         and rosa_seq_address_mode in {"online_exact", "online_sam"}
     )
+    can_snapshot_online_seq = (
+        enable_train_state_snapshot
+        and effective_train_mode == "online_seq"
+        and uses_full_doc_memory
+        and rosa_seq_address_mode in {"online_exact", "online_sam"}
+    )
+    if can_cache_online_seq and can_snapshot_online_seq:
+        raise ValueError("训练地址缓存与训练状态快照不能同时启用。")
 
     if using_reference_precompute:
         train_pre = build_doc_local_precomputed_rosa(
@@ -623,6 +674,9 @@ def build_chunk_datasets(
             "global_train_memory_tokens": 0,
             "train_global_memory_size": 0,
             "precomputed_doc_local_sam": True,
+            "cached_online_seq_addresses": False,
+            "state_snapshot_online_seq": False,
+            "train_state_snapshot_interval": 0,
             "uses_full_doc_memory": True,
             "address_build_policy": "reference_precompute",
             "effective_history": "full_doc_prefix",
@@ -633,6 +687,72 @@ def build_chunk_datasets(
         return train_ds, val_ds, test_ds, meta
 
     if rosa_memory_mode == "doc_local":
+        if can_snapshot_online_seq:
+            train_snapshots = build_sequence_online_state_snapshots(
+                train_tok,
+                sequence_mode=rosa_seq_address_mode,
+                snapshot_interval=train_state_snapshot_interval,
+                min_match_len=rosa_min_match_len,
+                special_ids=special_ids,
+                forbid_special_target=forbid_special_target,
+            )
+            val_snapshots = build_sequence_online_state_snapshots(
+                val_tok,
+                sequence_mode=rosa_seq_address_mode,
+                snapshot_interval=train_state_snapshot_interval,
+                min_match_len=rosa_min_match_len,
+                special_ids=special_ids,
+                forbid_special_target=forbid_special_target,
+            )
+            test_snapshots = build_sequence_online_state_snapshots(
+                test_tok,
+                sequence_mode=rosa_seq_address_mode,
+                snapshot_interval=train_state_snapshot_interval,
+                min_match_len=rosa_min_match_len,
+                special_ids=special_ids,
+                forbid_special_target=forbid_special_target,
+            )
+            train_ds = DocChunkDataset(
+                train_tok,
+                seq_len=seq_len,
+                pad_id=pad_id,
+                stride=stride,
+                rosa_memory_tokens=0,
+                doc_state_snapshots=train_snapshots,
+            )
+            val_ds = DocChunkDataset(
+                val_tok,
+                seq_len=seq_len,
+                pad_id=pad_id,
+                stride=stride,
+                rosa_memory_tokens=0,
+                doc_state_snapshots=val_snapshots,
+            )
+            test_ds = DocChunkDataset(
+                test_tok,
+                seq_len=seq_len,
+                pad_id=pad_id,
+                stride=stride,
+                rosa_memory_tokens=0,
+                doc_state_snapshots=test_snapshots,
+            )
+            meta = {
+                "requested_train_mode": rosa_train_mode,
+                "effective_train_mode": effective_train_mode,
+                "rosa_memory_mode": rosa_memory_mode,
+                "doc_local_memory_tokens": 0,
+                "configured_doc_local_memory_tokens": rosa_memory_tokens,
+                "global_train_memory_tokens": 0,
+                "train_global_memory_size": 0,
+                "precomputed_doc_local_sam": False,
+                "cached_online_seq_addresses": False,
+                "state_snapshot_online_seq": True,
+                "train_state_snapshot_interval": train_state_snapshot_interval,
+                "uses_full_doc_memory": True,
+                "address_build_policy": "sequence_online_snapshot_replay",
+                "effective_history": f"full_doc_prefix_online_seq_snapshot_{train_state_snapshot_interval}",
+            }
+            return train_ds, val_ds, test_ds, meta
         if can_cache_online_seq:
             train_pre = build_sequence_online_precomputed_rosa(
                 train_tok,
@@ -696,6 +816,8 @@ def build_chunk_datasets(
                 "train_global_memory_size": 0,
                 "precomputed_doc_local_sam": False,
                 "cached_online_seq_addresses": True,
+                "state_snapshot_online_seq": False,
+                "train_state_snapshot_interval": 0,
                 "uses_full_doc_memory": True,
                 "address_build_policy": "sequence_online_cached",
                 "effective_history": "full_doc_prefix_online_seq_cached",
@@ -735,6 +857,8 @@ def build_chunk_datasets(
             "train_global_memory_size": 0,
             "precomputed_doc_local_sam": False,
             "cached_online_seq_addresses": False,
+            "state_snapshot_online_seq": False,
+            "train_state_snapshot_interval": 0,
             "uses_full_doc_memory": uses_full_doc_memory,
             "address_build_policy": "sequence_online",
             "effective_history": (
@@ -750,6 +874,84 @@ def build_chunk_datasets(
 
     global_cap = rosa_global_memory_tokens if rosa_global_memory_tokens > 0 else rosa_memory_tokens
     train_prefixes, full_train_memory = build_global_memory_prefixes(train_tok, global_cap)
+
+    if can_snapshot_online_seq:
+        val_prefixes = [list(full_train_memory) for _ in val_tok]
+        test_prefixes = [list(full_train_memory) for _ in test_tok]
+        train_snapshots = build_sequence_online_state_snapshots(
+            train_tok,
+            sequence_mode=rosa_seq_address_mode,
+            snapshot_interval=train_state_snapshot_interval,
+            min_match_len=rosa_min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            memory_prefixes=train_prefixes,
+        )
+        val_snapshots = build_sequence_online_state_snapshots(
+            val_tok,
+            sequence_mode=rosa_seq_address_mode,
+            snapshot_interval=train_state_snapshot_interval,
+            min_match_len=rosa_min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            memory_prefixes=val_prefixes,
+        )
+        test_snapshots = build_sequence_online_state_snapshots(
+            test_tok,
+            sequence_mode=rosa_seq_address_mode,
+            snapshot_interval=train_state_snapshot_interval,
+            min_match_len=rosa_min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            memory_prefixes=test_prefixes,
+        )
+        train_ds = DocChunkDataset(
+            train_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=0,
+            global_memory_tokens=global_cap,
+            full_doc_memory=True,
+            doc_state_snapshots=train_snapshots,
+        )
+        val_ds = DocChunkDataset(
+            val_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=0,
+            global_memory_tokens=global_cap,
+            full_doc_memory=True,
+            doc_state_snapshots=val_snapshots,
+        )
+        test_ds = DocChunkDataset(
+            test_tok,
+            seq_len=seq_len,
+            pad_id=pad_id,
+            stride=stride,
+            rosa_memory_tokens=0,
+            global_memory_tokens=global_cap,
+            full_doc_memory=True,
+            doc_state_snapshots=test_snapshots,
+        )
+        meta = {
+            "requested_train_mode": rosa_train_mode,
+            "effective_train_mode": effective_train_mode,
+            "rosa_memory_mode": rosa_memory_mode,
+            "doc_local_memory_tokens": 0,
+            "configured_doc_local_memory_tokens": rosa_memory_tokens,
+            "global_train_memory_tokens": global_cap,
+            "train_global_memory_size": len(full_train_memory),
+            "precomputed_doc_local_sam": False,
+            "cached_online_seq_addresses": False,
+            "state_snapshot_online_seq": True,
+            "train_state_snapshot_interval": train_state_snapshot_interval,
+            "uses_full_doc_memory": True,
+            "address_build_policy": "sequence_online_snapshot_replay",
+            "effective_history": f"global_train_tail_{global_cap}_plus_full_doc_prefix_snapshot_{train_state_snapshot_interval}",
+        }
+        return train_ds, val_ds, test_ds, meta
 
     if can_cache_online_seq:
         val_prefixes = [list(full_train_memory) for _ in val_tok]
@@ -819,6 +1021,8 @@ def build_chunk_datasets(
             "train_global_memory_size": len(full_train_memory),
             "precomputed_doc_local_sam": False,
             "cached_online_seq_addresses": True,
+            "state_snapshot_online_seq": False,
+            "train_state_snapshot_interval": 0,
             "uses_full_doc_memory": True,
             "address_build_policy": "sequence_online_cached",
             "effective_history": f"global_train_tail_{global_cap}_plus_full_doc_prefix_cached",
@@ -865,6 +1069,8 @@ def build_chunk_datasets(
         "train_global_memory_size": len(full_train_memory),
         "precomputed_doc_local_sam": False,
         "cached_online_seq_addresses": False,
+        "state_snapshot_online_seq": False,
+        "train_state_snapshot_interval": 0,
         "uses_full_doc_memory": uses_full_doc_memory,
         "address_build_policy": "sequence_online",
         "effective_history": (
@@ -1185,6 +1391,8 @@ class BaseLM(nn.Module):
         input_ids: torch.Tensor,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1207,6 +1415,8 @@ class BaseLM(nn.Module):
         labels: Optional[torch.Tensor] = None,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1217,6 +1427,8 @@ class BaseLM(nn.Module):
             input_ids,
             rosa_memory_ids=rosa_memory_ids,
             rosa_online_state=rosa_online_state,
+            rosa_state_snapshots=rosa_state_snapshots,
+            rosa_replay_ids=rosa_replay_ids,
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
             rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
@@ -1398,6 +1610,8 @@ class RosaFusedLM(BaseLM):
         *,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1427,6 +1641,14 @@ class RosaFusedLM(BaseLM):
             return self.address_engine.forward_step(
                 input_ids,
                 rosa_online_state,
+                device=input_ids.device,
+            )
+
+        if rosa_state_snapshots is not None:
+            return self.address_engine.forward_seq_from_snapshots(
+                input_ids=input_ids,
+                state_snapshots=rosa_state_snapshots,
+                replay_ids=rosa_replay_ids,
                 device=input_ids.device,
             )
 
@@ -1493,6 +1715,8 @@ class RosaFusedLM(BaseLM):
         *,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
         rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
@@ -1504,6 +1728,8 @@ class RosaFusedLM(BaseLM):
                 input_ids,
                 rosa_memory_ids=rosa_memory_ids,
                 rosa_online_state=rosa_online_state,
+                rosa_state_snapshots=rosa_state_snapshots,
+                rosa_replay_ids=rosa_replay_ids,
                 rosa_precomputed_ids=rosa_precomputed_ids,
                 rosa_precomputed_match_lens=rosa_precomputed_match_lens,
                 rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
@@ -1576,6 +1802,8 @@ class RosaFusedLM(BaseLM):
         input_ids: torch.Tensor,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
         rosa_payload: Optional[RosaInjectionPayload] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
@@ -1588,6 +1816,8 @@ class RosaFusedLM(BaseLM):
                 input_ids,
                 rosa_memory_ids=rosa_memory_ids,
                 rosa_online_state=rosa_online_state,
+                rosa_state_snapshots=rosa_state_snapshots,
+                rosa_replay_ids=rosa_replay_ids,
                 rosa_precomputed_ids=rosa_precomputed_ids,
                 rosa_precomputed_match_lens=rosa_precomputed_match_lens,
                 rosa_precomputed_raw_best_lens=rosa_precomputed_raw_best_lens,
@@ -1684,6 +1914,8 @@ class RosaFusedLM(BaseLM):
         labels: Optional[torch.Tensor] = None,
         rosa_memory_ids: Optional[torch.Tensor] = None,
         rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
         rosa_payload: Optional[RosaInjectionPayload] = None,
         rosa_precomputed_ids: Optional[torch.Tensor] = None,
         rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
@@ -1695,6 +1927,8 @@ class RosaFusedLM(BaseLM):
             input_ids,
             rosa_memory_ids=rosa_memory_ids,
             rosa_online_state=rosa_online_state,
+            rosa_state_snapshots=rosa_state_snapshots,
+            rosa_replay_ids=rosa_replay_ids,
             rosa_payload=rosa_payload,
             rosa_precomputed_ids=rosa_precomputed_ids,
             rosa_precomputed_match_lens=rosa_precomputed_match_lens,
@@ -1793,6 +2027,8 @@ def evaluate(
             step_timer.add_seconds("eval_data_wait", time.perf_counter() - next_batch_started_at)
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
+            state_snapshots = batch.get("rosa_state_snapshots")
+            replay_ids = batch.get("rosa_replay_ids")
             pre_ids = batch.get("rosa_precomputed_ids")
             pre_match = batch.get("rosa_precomputed_match_lens")
             pre_raw = batch.get("rosa_precomputed_raw_best_lens")
@@ -1804,6 +2040,8 @@ def evaluate(
                     x,
                     y,
                     rosa_memory_ids=mem,
+                    rosa_state_snapshots=state_snapshots,
+                    rosa_replay_ids=replay_ids.to(device) if replay_ids is not None else None,
                     rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
                     rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
                     rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
@@ -1883,6 +2121,8 @@ def train_one_model(
             step_timer.add_seconds("data_wait", time.perf_counter() - next_batch_started_at)
             x = batch["input_ids"].to(device)
             mem = batch["rosa_memory_ids"].to(device)
+            state_snapshots = batch.get("rosa_state_snapshots")
+            replay_ids = batch.get("rosa_replay_ids")
             pre_ids = batch.get("rosa_precomputed_ids")
             pre_match = batch.get("rosa_precomputed_match_lens")
             pre_raw = batch.get("rosa_precomputed_raw_best_lens")
@@ -1899,6 +2139,8 @@ def train_one_model(
                             x,
                             y,
                             rosa_memory_ids=mem,
+                            rosa_state_snapshots=state_snapshots,
+                            rosa_replay_ids=replay_ids.to(device) if replay_ids is not None else None,
                             rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
                             rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
                             rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
@@ -1912,6 +2154,8 @@ def train_one_model(
                         x,
                         y,
                         rosa_memory_ids=mem,
+                        rosa_state_snapshots=state_snapshots,
+                        rosa_replay_ids=replay_ids.to(device) if replay_ids is not None else None,
                         rosa_precomputed_ids=pre_ids.to(device) if pre_ids is not None else None,
                         rosa_precomputed_match_lens=pre_match.to(device) if pre_match is not None else None,
                         rosa_precomputed_raw_best_lens=pre_raw.to(device) if pre_raw is not None else None,
@@ -2079,6 +2323,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="显式开启 online_seq 训练地址缓存；会在数据集构建期预先缓存整文档 sequence 地址。默认关闭。")
     parser.add_argument("--disable_rosa_train_address_cache", action="store_true",
                         help="兼容旧命令行保留；当前训练地址缓存默认已关闭。")
+    parser.add_argument("--enable_rosa_train_state_snapshot", action="store_true",
+                        help="开启 online_seq 训练状态快照；在文档级缓存稀疏 state snapshot，并在 chunk 起点做 snapshot + 短 replay 恢复。")
+    parser.add_argument("--disable_rosa_train_state_snapshot", action="store_true",
+                        help="兼容旧命令行保留；当前训练状态快照默认已关闭。")
+    parser.add_argument("--rosa_train_state_snapshot_interval", type=int, default=256,
+                        help="训练状态快照间隔；仅在 --enable_rosa_train_state_snapshot 下生效。")
     parser.add_argument("--disable_rosa_train_address_async", action="store_true",
                         help="关闭训练期 online_seq 地址异步预取；默认会在主干训练当前 batch 时，由 CPU 后台准备下一 batch 地址。")
     parser.add_argument("--rosa_train_address_async_workers", type=int, default=1,
@@ -2206,6 +2456,9 @@ def main():
     print(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     print(f"训练 timing: {args.train_timing}")
     print(f"ROSA train address async: {not args.disable_rosa_train_address_async}")
+    print(f"ROSA train address cache: {args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache}")
+    print(f"ROSA train state snapshot: {args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot}")
+    print(f"ROSA train state snapshot interval: {args.rosa_train_state_snapshot_interval}")
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     if recipe_meta["applied"]:
         print(f"ROSA recipe detail: {recipe_meta['description']}")
@@ -2233,6 +2486,8 @@ def main():
         special_ids=tokenizer.special_ids,
         forbid_special_target=not args.rosa_allow_special_target,
         enable_train_address_cache=(args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
+        enable_train_state_snapshot=(args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot),
+        train_state_snapshot_interval=args.rosa_train_state_snapshot_interval,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -2241,6 +2496,8 @@ def main():
         print("ROSA 文档内历史: full doc prefix (SAM precompute)")
     elif memory_meta.get("cached_online_seq_addresses"):
         print("ROSA 文档内历史: full doc prefix (cached online_seq)")
+    elif memory_meta.get("state_snapshot_online_seq"):
+        print(f"ROSA 文档内历史: full doc prefix (snapshot + replay, interval={memory_meta['train_state_snapshot_interval']})")
     elif memory_meta.get("uses_full_doc_memory"):
         print("ROSA 文档内历史: full doc prefix (online_seq)")
     else:
@@ -2252,6 +2509,8 @@ def main():
         print("ROSA 特征: doc-local SAM 预计算模式")
     elif memory_meta.get("cached_online_seq_addresses"):
         print("ROSA 特征: 在线 sequence addressing（训练地址缓存）")
+    elif memory_meta.get("state_snapshot_online_seq"):
+        print("ROSA 特征: 在线 sequence addressing（训练状态快照 + 短 replay）")
     else:
         print(f"ROSA 特征: 在线 sequence addressing ({memory_meta['effective_train_mode']})")
     cfg = build_model_config(args, tokenizer)
@@ -2395,6 +2654,8 @@ def main():
             "train_address_async": (args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
             "train_address_async_workers": args.rosa_train_address_async_workers,
             "train_address_cache": (args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
+            "train_state_snapshot": (args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot),
+            "train_state_snapshot_interval": args.rosa_train_state_snapshot_interval,
             "context_gate": args.rosa_context_gate,
             "hot_cache_size": args.rosa_hot_cache_size,
             "train_timing": args.train_timing,

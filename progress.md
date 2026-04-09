@@ -32,6 +32,7 @@
 - [x] 训练阶段 timing 监控与慢点定位
 - [x] 在线主线 P2: `online_sam` sequence 快路径
 - [x] 在线主线 P2: `online_v2` per-layer recipe 主线化
+- [x] 在线主线 P2: 文档级状态快照与 chunk 起点恢复 v1
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -187,7 +188,22 @@
   - 训练主脚本
   - profile
   - layer sweep
- 这三条入口上直接复用
+  这三条入口上直接复用
+- 新增 `rosa_training_snapshot.py`
+- 在线训练主线现已支持“训练状态快照”：
+  - 文档级稀疏 `RosaStateSnapshot`
+  - chunk 起点 `snapshot + 短 replay`
+  - 训练 batch / 异步预取 / 模型前向统一复用同一恢复路径
+- 新增开关：
+  - `--enable_rosa_train_state_snapshot`
+  - `--disable_rosa_train_state_snapshot`
+  - `--rosa_train_state_snapshot_interval`
+- `RosaAddressEngine` 现已支持：
+  - `init_state_from_snapshots()`
+  - `forward_seq_from_snapshots()`
+- `DocChunkDataset` 现可在不复制整段 `rosa_precomputed_*` 的情况下，为每个 chunk 动态提供：
+  - `rosa_state_snapshot`
+  - `rosa_replay_ids`
 
 ## 自我验证记录
 
@@ -222,6 +238,9 @@
 - `D:\\anaconda\\envs\\model\\python.exe -c \"...online_sam_address_meta_with_memory(... implementation='stateful'/'fast')...\"`（纯地址 microbenchmark）
 - `conda run -n model python -m unittest tests.test_rosa_recipes tests.test_profile_rosa_online_baseline tests.test_scan_rosa_injection_layers`
 - `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v2 --rosa_online_sam_impl fast --train_timing`
+- `conda run -n model python -m unittest tests.test_rosa_training_snapshot tests.test_train_qwen_llama_vs_rosa_v2`
+- `conda run -n model python -m py_compile rosa_addressing.py rosa_training_snapshot.py rosa_train_async.py train_qwen_llama_vs_rosa_v2.py tests\\test_rosa_training_snapshot.py tests\\test_train_qwen_llama_vs_rosa_v2.py`
+- `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v1 --enable_rosa_train_state_snapshot --rosa_train_state_snapshot_interval 256 --disable_rosa_train_address_async --train_timing`
 - 结果：本次改动相关的 targeted tests 已通过，`profile` smoke 也已通过；`unittest discover -s tests` 在当前 Windows 环境下仍会遇到独立的 tempfile 权限噪声，需要与本次代码逻辑问题区分看待。
 - cache smoke 结论：`min_match_len=1` toy profile 上，prefill / decode hot cache token hit rate 约 `0.98 / 0.96`；端到端平均时延基本持平，说明当前收益主要体现在“减少重复 value fetch”，更适合后续 host memory / mmap 路径放大。
 - AddressEngine 结论：`online_exact` 模式下，`forward_seq()` 与现有 reference 地址结果保持对齐，可作为后续切换训练主线的统一入口。
@@ -273,8 +292,8 @@
 - 已将“训练地址缓存”从默认主路径降回可选开关，并把真正的优化主线转到：
   - 训练期地址支路异步化 / overlap
   - 在线 SAM sequence 路径的高性能实现
+  - 状态快照进一步轻量化 / 磁盘化 / 间隔策略优化
   - memory window / bookmark
-  - 状态快照 / chunk 起点恢复
 - 已把后续性能优化 backlog 细化写回 `ROSA_在线主线重构_TODO.md`，当前重点候选包括：
   - async overlap v2/v3（queue depth / process worker / pinned buffer）
   - `sam_rosa_predict` 的 C++ CPU / CUDA / Triton 版
@@ -283,8 +302,8 @@
   - 更细粒度 timing 口径统一
 - 已把 `ROSA_在线主线重构_TODO.md` 主表补成显式状态列：
   - `已完成`：10 项
-  - `进行中`：2 项
-  - `未开始`：9 项
+  - `进行中`：4 项
+  - `未开始`：7 项
 - 地址异步预取结论：当前 `8/4/4` 小实验里，在不启用训练地址缓存的情况下：
   - `step ~103.3ms -> ~69.1ms`
   - `timing_model_rosa_address_ms ~44.7ms -> ~0.5ms`
@@ -304,6 +323,12 @@
     - `online_v1`: `test loss 16.5346`，`token_acc 0.04419`，`step ~35.50ms`
     - `online_v2`: `test loss 16.5328`，`token_acc 0.04602`，`step ~74.60ms`
   - 说明 `per_layer` 在当前小实验上带来轻微效果增益，但训练成本明显更高；因此现在更适合把它标成“在线主线已接入、待进一步评估”，而不是直接替代 `online_v1`
+- snapshot + replay v1 结论：
+  - 当前 `32/8/8 docs` 的 MiniPile 同步训练小实验里：
+    - full prefix：`rosa_addr ~27.00ms`，`step ~59.36ms`
+    - snapshot interval 256：`rosa_addr ~21.08ms`，`step ~55.65ms`
+    - test 指标保持一致：`loss 16.5346`，`token_acc 0.04419`
+  - 说明这条路径已经能在不退回“整文档地址全缓存”的情况下，进一步减少 full-history 在线训练的同步地址成本
 
 ## 备注
 

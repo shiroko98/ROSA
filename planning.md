@@ -14,6 +14,7 @@
 - 当前进展：训练地址异步预取已落地，可在不持久缓存整数据集的前提下，把 `online_seq` 地址准备与 GPU 主干训练做 overlap
 - 当前进展：`online_sam` 的 sequence 快路径已落地，默认可通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`；`stateful` 保留为逐 token 回归实现
 - 当前进展：`online_v2` 配方已落地，把 `per_layer ValueStore` 正式接入在线训练主线实验入口，训练 / profile / sweep 现在都能直接通过 recipe 复用这组配置
+- 当前进展：训练期 `snapshot + 短 replay` 第一版已落地，当前可在文档级缓存稀疏 `RosaStateSnapshot`，并在 chunk 起点恢复在线状态而不必为每个 sample 复制整段地址表
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -150,6 +151,15 @@
   - `online_v1`：`test loss 16.5346`，`token_acc 0.04419`，`step ~35.50ms`
   - `online_v2`：`test loss 16.5328`，`token_acc 0.04602`，`step ~74.60ms`
   - 说明 `per_layer` 在这次小实验上带来轻微效果增益，但参数量和训练开销明显上升，后续仍需更系统评估
+- 已新增 `rosa_training_snapshot.py`，支持：
+  - 文档级稀疏 state snapshot 构建
+  - `AddressEngine.forward_seq_from_snapshots()`
+  - batch 预处理阶段从 snapshot 恢复并做 chunk 起点短 replay
+- 小型 MiniPile 同步训练实验（`32/8/8 docs`, `fast + sync`）当前结果：
+  - full prefix：`rosa_addr ~27.00ms`，`step ~59.36ms`
+  - snapshot interval 256：`rosa_addr ~21.08ms`，`step ~55.65ms`
+  - test 指标保持一致（`loss 16.5346`，`token_acc 0.04419`）
+  - 说明 snapshot + replay v1 已经在不改 full-history 语义的前提下，进一步压低了同步地址开销
 
 ## 下一任务
 
@@ -158,8 +168,8 @@
 3. 训练性能优化后续优先项：
    - 地址支路 CPU worker 前移 / next-batch overlap
    - `online_sam` sequence 快路径进一步下沉到 C++/CUDA/Triton
-   - memory window / bookmark
-   - 状态快照 / chunk 起点恢复
+   - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔
+   - memory window / bookmark（保留为可选工程折中，而非默认主线）
 4. 当前已用 `--train_timing` 验证并完成两轮修复：
    - async overlap 把训练中等待地址的成本压到近零
    - `fast online_sam` 把纯 sequence 地址层成本压到 `stateful` 的约 `39%`

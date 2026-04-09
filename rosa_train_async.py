@@ -16,11 +16,21 @@ def prepare_online_seq_batch(
 
     input_ids = batch["input_ids"]
     memory_ids = batch.get("rosa_memory_ids")
-    address_batch = address_engine.forward_seq(
-        input_ids=input_ids,
-        memory_ids=memory_ids,
-        device=torch.device("cpu"),
-    )
+    state_snapshots = batch.get("rosa_state_snapshots")
+    replay_ids = batch.get("rosa_replay_ids")
+    if state_snapshots is not None:
+        address_batch = address_engine.forward_seq_from_snapshots(
+            input_ids=input_ids,
+            state_snapshots=state_snapshots,
+            replay_ids=replay_ids,
+            device=torch.device("cpu"),
+        )
+    else:
+        address_batch = address_engine.forward_seq(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            device=torch.device("cpu"),
+        )
     prepared = dict(batch)
     prepared["rosa_precomputed_ids"] = address_batch.addr_ids.cpu()
     prepared["rosa_precomputed_match_lens"] = address_batch.fired_match_lens.cpu()

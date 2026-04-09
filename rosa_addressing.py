@@ -25,6 +25,8 @@ class RosaStateSnapshot:
     token_ids: Tuple[int, ...]
     num_tokens: int
     last_address: Optional[AddressMeta] = None
+    backend_name: str = "exact_list"
+    backend_state: Optional[Dict[str, Any]] = None
 
 
 def build_address_meta(
@@ -136,6 +138,7 @@ class ExactMatchRosaState:
             token_ids=tuple(self._token_ids),
             num_tokens=len(self._token_ids),
             last_address=self._last_address,
+            backend_name="exact_list",
         )
 
     def clone(self) -> "ExactMatchRosaState":
@@ -148,6 +151,26 @@ class ExactMatchRosaState:
         cloned._token_ids = list(self._token_ids)
         cloned._last_address = self._last_address
         return cloned
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: RosaStateSnapshot,
+        *,
+        min_match_len: int = 1,
+        special_ids: Optional[set] = None,
+        forbid_special_target: bool = True,
+        source_type: str = "token_exact",
+    ) -> "ExactMatchRosaState":
+        state = cls(
+            min_match_len=min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            source_type=source_type,
+        )
+        state._token_ids = list(snapshot.token_ids)
+        state._last_address = snapshot.last_address
+        return state
 
 
 def _coerce_batch_token_rows(token_ids: Any) -> List[List[int]]:
@@ -242,6 +265,31 @@ class OnlineRosaBatchState:
 
     def clone(self) -> "OnlineRosaBatchState":
         return OnlineRosaBatchState([state.clone() for state in self.states])
+
+    @classmethod
+    def from_snapshots(
+        cls,
+        snapshots: Sequence[RosaStateSnapshot],
+        *,
+        min_match_len: int = 1,
+        special_ids: Optional[set] = None,
+        forbid_special_target: bool = True,
+        source_type: str = "token_exact",
+        state_backend: str = "sam",
+    ) -> "OnlineRosaBatchState":
+        states: List[Any] = []
+        for snapshot in snapshots:
+            states.append(
+                restore_state_from_snapshot(
+                    snapshot,
+                    min_match_len=min_match_len,
+                    special_ids=special_ids,
+                    forbid_special_target=forbid_special_target,
+                    source_type=source_type,
+                    state_backend=state_backend,
+                )
+            )
+        return cls(states)
 
 
 def build_online_rosa_batch_state(
@@ -452,6 +500,14 @@ class SuffixAutomatonRosaState:
             token_ids=tuple(self._token_ids),
             num_tokens=len(self._token_ids),
             last_address=self._last_address,
+            backend_name="sam",
+            backend_state={
+                "trans": tuple(tuple(sorted(row.items())) for row in self._trans),
+                "link": tuple(self._link),
+                "length": tuple(self._length),
+                "endpos": tuple(self._endpos),
+                "last": self._last,
+            },
         )
 
     def clone(self) -> "SuffixAutomatonRosaState":
@@ -470,8 +526,65 @@ class SuffixAutomatonRosaState:
         cloned._last = self._last
         return cloned
 
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: RosaStateSnapshot,
+        *,
+        min_match_len: int = 1,
+        special_ids: Optional[set] = None,
+        forbid_special_target: bool = True,
+        source_type: str = "token_exact",
+    ) -> "SuffixAutomatonRosaState":
+        state = cls(
+            min_match_len=min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            source_type=source_type,
+        )
+        backend_state = snapshot.backend_state
+        if snapshot.backend_name != "sam" or not backend_state:
+            state.prefill(snapshot.token_ids)
+            return state
+        state._token_ids = list(snapshot.token_ids)
+        state._last_address = snapshot.last_address
+        state._trans = [dict(row) for row in backend_state["trans"]]
+        state._link = list(backend_state["link"])
+        state._length = list(backend_state["length"])
+        state._endpos = list(backend_state["endpos"])
+        state._last = int(backend_state["last"])
+        return state
+
 
 OnlineRosaState = SuffixAutomatonRosaState
+
+
+def restore_state_from_snapshot(
+    snapshot: RosaStateSnapshot,
+    *,
+    min_match_len: int = 1,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+    source_type: str = "token_exact",
+    state_backend: str = "sam",
+):
+    if state_backend == "exact_list":
+        return ExactMatchRosaState.from_snapshot(
+            snapshot,
+            min_match_len=min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            source_type=source_type,
+        )
+    if state_backend == "sam":
+        return SuffixAutomatonRosaState.from_snapshot(
+            snapshot,
+            min_match_len=min_match_len,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+            source_type=source_type,
+        )
+    raise ValueError(f"未知 state_backend: {state_backend}")
 
 
 def _stateful_online_sam_address_meta_with_memory(
@@ -798,6 +911,19 @@ class RosaAddressEngine:
             state_backend=self._state_backend(),
         )
 
+    def init_state_from_snapshots(
+        self,
+        snapshots: Sequence[RosaStateSnapshot],
+    ) -> OnlineRosaBatchState:
+        return OnlineRosaBatchState.from_snapshots(
+            snapshots,
+            min_match_len=self.min_match_len,
+            special_ids=self.special_ids,
+            forbid_special_target=self.forbid_special_target,
+            source_type=self.source_type,
+            state_backend=self._state_backend(),
+        )
+
     def forward_step(
         self,
         input_ids: torch.Tensor,
@@ -864,4 +990,26 @@ class RosaAddressEngine:
             )
         else:
             raise ValueError(f"未知 rosa sequence_mode: {self.sequence_mode}")
+        return batch.to(device) if device is not None else batch
+
+    def forward_seq_from_snapshots(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        state_snapshots: Sequence[RosaStateSnapshot],
+        replay_ids: Optional[torch.Tensor] = None,
+        device: Optional[torch.device] = None,
+    ) -> RosaAddressBatch:
+        state = self.init_state_from_snapshots(state_snapshots)
+        if replay_ids is not None and replay_ids.numel() > 0:
+            state.prefill(replay_ids, pad_id=self.pad_id)
+        batch = self.forward_step(input_ids, state, device=input_ids.device)
+        batch = RosaAddressBatch(
+            addr_ids=batch.addr_ids,
+            raw_match_lens=batch.raw_match_lens,
+            fired_match_lens=batch.fired_match_lens,
+            valid_mask=batch.valid_mask,
+            special_mask=batch.special_mask,
+            source=f"seq:{self.sequence_mode}:snapshot",
+        )
         return batch.to(device) if device is not None else batch
