@@ -23,6 +23,8 @@ TRAIN_ARGS=(
   --seq_len "${SEQ_LEN}"
   --stride "${STRIDE}"
   --batch_size "${BATCH_SIZE}"
+  --train_num_workers "${TRAIN_NUM_WORKERS}"
+  --eval_num_workers "${EVAL_NUM_WORKERS}"
   --epochs "${EPOCHS}"
   --grad_accum_steps "${GRAD_ACCUM_STEPS}"
   --lr "${LR}"
@@ -48,6 +50,14 @@ fi
 
 if [[ "${ENABLE_BF16}" == "1" ]]; then
   TRAIN_ARGS+=(--bf16)
+fi
+
+if [[ "${DATALOADER_PIN_MEMORY}" == "1" ]]; then
+  TRAIN_ARGS+=(--dataloader_pin_memory)
+fi
+
+if [[ "${DATALOADER_PERSISTENT_WORKERS}" == "1" ]]; then
+  TRAIN_ARGS+=(--dataloader_persistent_workers)
 fi
 
 if [[ "${TRAIN_TIMING}" == "1" ]]; then

@@ -506,6 +506,25 @@
     - 累积 tokens 进度
     - CUDA 显存当前值与峰值
   - 服务器脚本已支持从 `scripts/server/server_env.sh` 一处开启 `ENABLE_WANDB=1`
+- 已补 DataLoader 吞吐优化开关：
+  - 训练脚本新增：
+    - `--train_num_workers`
+    - `--eval_num_workers`
+    - `--dataloader_pin_memory`
+    - `--dataloader_persistent_workers`
+  - 当前服务器中档默认值：
+    - `train_num_workers=4`
+    - `eval_num_workers=2`
+    - `pin_memory=on`
+    - `persistent_workers=on`
+  - 同时把服务器默认训练配置调到了中档版：
+    - `bf16=on`
+    - `train_timing=off`
+    - `activation_checkpointing=off`
+    - `seq_len=2048`
+    - `batch_size=2`
+    - `grad_accum_steps=4`
+    - `dim=1536 / layers=24 / heads=16 / kv_heads=8 / intermediate=6144`
 
 ## 备注
 

@@ -588,12 +588,20 @@ def build_dataloaders(
     batch_size: int,
     pad_id: int,
     train_seed: int,
+    train_num_workers: int = 0,
+    eval_num_workers: int = 0,
+    pin_memory: bool = False,
+    persistent_workers: bool = False,
     distributed_context: Optional[DistributedContext] = None,
 ):
     collate_fn = make_collate_fn(pad_id)
     train_sampler = build_distributed_sampler(train_ds, ctx=distributed_context, shuffle=True, seed=train_seed)
     val_sampler = build_distributed_sampler(val_ds, ctx=distributed_context, shuffle=False, seed=train_seed)
     test_sampler = build_distributed_sampler(test_ds, ctx=distributed_context, shuffle=False, seed=train_seed)
+    train_num_workers = max(0, int(train_num_workers))
+    eval_num_workers = max(0, int(eval_num_workers))
+    train_persistent_workers = bool(persistent_workers and train_num_workers > 0)
+    eval_persistent_workers = bool(persistent_workers and eval_num_workers > 0)
     train_generator = None
     if train_sampler is None:
         train_generator = torch.Generator()
@@ -605,9 +613,30 @@ def build_dataloaders(
         sampler=train_sampler,
         collate_fn=collate_fn,
         generator=train_generator,
+        num_workers=train_num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=train_persistent_workers,
     )
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, sampler=val_sampler, collate_fn=collate_fn)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, sampler=test_sampler, collate_fn=collate_fn)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        sampler=val_sampler,
+        collate_fn=collate_fn,
+        num_workers=eval_num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=eval_persistent_workers,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        sampler=test_sampler,
+        collate_fn=collate_fn,
+        num_workers=eval_num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=eval_persistent_workers,
+    )
     return train_loader, val_loader, test_loader
 
 
@@ -2515,6 +2544,10 @@ def run_training_stage(
         batch_size=args.batch_size,
         pad_id=tokenizer.pad_token_id,
         train_seed=args.seed,
+        train_num_workers=args.train_num_workers,
+        eval_num_workers=args.eval_num_workers,
+        pin_memory=args.dataloader_pin_memory,
+        persistent_workers=args.dataloader_persistent_workers,
         distributed_context=distributed_context,
     )
 
@@ -2652,6 +2685,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         choices=available_rosa_recipe_names(),
                         help="应用一个 ROSA 预设配方。online_v1 会固定 shared value、online_sam、单早层与 context gate。")
     parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--train_num_workers", type=int, default=0,
+                        help="训练 DataLoader 的 worker 数。大规模服务器训练建议设为 2~8。")
+    parser.add_argument("--eval_num_workers", type=int, default=0,
+                        help="验证/测试 DataLoader 的 worker 数。")
+    parser.add_argument("--dataloader_pin_memory", action="store_true",
+                        help="为 DataLoader 启用 pin_memory。GPU 训练通常建议开启。")
+    parser.add_argument("--dataloader_persistent_workers", action="store_true",
+                        help="当 DataLoader worker 数 > 0 时启用 persistent_workers，减少 epoch 间重启开销。")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -2918,7 +2959,12 @@ def main():
     log(f"wandb: {args.wandb and args.wandb_mode != 'disabled'}")
     log(f"wandb mode: {args.wandb_mode}")
     log(f"activation checkpointing: {args.activation_checkpointing}")
+    log(f"bf16: {args.bf16}")
     log(f"grad accum steps: {args.grad_accum_steps}")
+    log(f"train num workers: {args.train_num_workers}")
+    log(f"eval num workers: {args.eval_num_workers}")
+    log(f"dataloader pin memory: {args.dataloader_pin_memory}")
+    log(f"dataloader persistent workers: {args.dataloader_persistent_workers}")
     log(f"save every epochs: {args.save_every_epochs}")
     log(f"ROSA train address async: {not args.disable_rosa_train_address_async}")
     log(f"ROSA train address cache: {args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache}")
@@ -3111,6 +3157,12 @@ def main():
             "backend": distributed_context.backend,
             "world_size": distributed_context.world_size,
             "rank": distributed_context.rank,
+        },
+        "dataloader": {
+            "train_num_workers": args.train_num_workers,
+            "eval_num_workers": args.eval_num_workers,
+            "pin_memory": args.dataloader_pin_memory,
+            "persistent_workers": args.dataloader_persistent_workers,
         },
         "baseline": executed_results.get("baseline"),
         "rosa_fused": executed_results.get("rosa_fused"),

@@ -270,6 +270,19 @@
      - token 累积进度
      - CUDA 显存占用/峰值
    - 服务器脚本统一从 `scripts/server/server_env.sh` 读取 `ENABLE_WANDB` 等开关
+10. 已将服务器默认训练配置切到中档版：
+   - `bf16=on`
+   - `train_timing=off`
+   - `activation_checkpointing=off`
+   - `seq_len=2048`
+   - `batch_size=2`
+   - `grad_accum_steps=4`
+   - `dim=1536 / layers=24 / heads=16 / kv_heads=8 / intermediate=6144`
+   - DataLoader:
+     - `train_num_workers=4`
+     - `eval_num_workers=2`
+     - `pin_memory=on`
+     - `persistent_workers=on`
 
 ## 自我验证清单
 

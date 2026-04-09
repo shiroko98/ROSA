@@ -199,6 +199,42 @@ class FairComparisonTests(unittest.TestCase):
 
         self.assertEqual(collect_batches(loader_a), collect_batches(loader_b))
 
+    def test_build_dataloaders_supports_worker_and_pin_memory_options(self):
+        docs_tokens = [
+            [1, 2, 3, 4, 5],
+            [6, 7, 8, 9, 10],
+        ]
+        dataset = rosa_mod.DocChunkDataset(
+            docs_tokens,
+            seq_len=2,
+            pad_id=0,
+            stride=1,
+            rosa_memory_tokens=3,
+        )
+
+        train_loader, val_loader, test_loader = rosa_mod.build_dataloaders(
+            dataset,
+            dataset,
+            dataset,
+            batch_size=2,
+            pad_id=0,
+            train_seed=2026,
+            train_num_workers=1,
+            eval_num_workers=1,
+            pin_memory=True,
+            persistent_workers=True,
+        )
+
+        self.assertEqual(train_loader.num_workers, 1)
+        self.assertEqual(val_loader.num_workers, 1)
+        self.assertEqual(test_loader.num_workers, 1)
+        self.assertTrue(train_loader.pin_memory)
+        self.assertTrue(val_loader.pin_memory)
+        self.assertTrue(test_loader.pin_memory)
+        self.assertTrue(train_loader.persistent_workers)
+        self.assertTrue(val_loader.persistent_workers)
+        self.assertTrue(test_loader.persistent_workers)
+
 
 class RosaValueStoreTests(unittest.TestCase):
     def setUp(self):

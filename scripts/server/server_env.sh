@@ -61,20 +61,28 @@ export MASTER_PORT="${MASTER_PORT:-29501}"
 # 4. 模型与训练超参
 # =========================
 export ARCH_STYLE="${ARCH_STYLE:-qwen}"
-export SEQ_LEN="${SEQ_LEN:-1024}"
-export STRIDE="${STRIDE:-1024}"
-export BATCH_SIZE="${BATCH_SIZE:-1}"
+export SEQ_LEN="${SEQ_LEN:-2048}"
+export STRIDE="${STRIDE:-2048}"
+export BATCH_SIZE="${BATCH_SIZE:-2}"
 export EPOCHS="${EPOCHS:-1}"
-export GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
+export GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-4}"
 export LR="${LR:-3e-4}"
 export WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
 export SEED="${SEED:-42}"
 
-export DIM="${DIM:-768}"
-export N_LAYERS="${N_LAYERS:-16}"
-export N_HEADS="${N_HEADS:-12}"
-export N_KV_HEADS="${N_KV_HEADS:-12}"
-export INTERMEDIATE_SIZE="${INTERMEDIATE_SIZE:-3072}"
+export DIM="${DIM:-1536}"
+export N_LAYERS="${N_LAYERS:-24}"
+export N_HEADS="${N_HEADS:-16}"
+export N_KV_HEADS="${N_KV_HEADS:-8}"
+export INTERMEDIATE_SIZE="${INTERMEDIATE_SIZE:-6144}"
+
+# =========================
+# 4.1 DataLoader 配置
+# =========================
+export TRAIN_NUM_WORKERS="${TRAIN_NUM_WORKERS:-4}"
+export EVAL_NUM_WORKERS="${EVAL_NUM_WORKERS:-2}"
+export DATALOADER_PIN_MEMORY="${DATALOADER_PIN_MEMORY:-1}"
+export DATALOADER_PERSISTENT_WORKERS="${DATALOADER_PERSISTENT_WORKERS:-1}"
 
 # =========================
 # 5. ROSA 主线配置
@@ -85,9 +93,9 @@ export DISTRIBUTED_STRATEGY="${DISTRIBUTED_STRATEGY:-ddp}"
 export DISTRIBUTED_BACKEND="${DISTRIBUTED_BACKEND:-nccl}"
 export RUN_MODELS="${RUN_MODELS:-rosa_fused}"
 export SAVE_EVERY_EPOCHS="${SAVE_EVERY_EPOCHS:-1}"
-export TRAIN_TIMING="${TRAIN_TIMING:-1}"
-export ACTIVATION_CHECKPOINTING="${ACTIVATION_CHECKPOINTING:-1}"
-export ENABLE_BF16="${ENABLE_BF16:-0}"
+export TRAIN_TIMING="${TRAIN_TIMING:-0}"
+export ACTIVATION_CHECKPOINTING="${ACTIVATION_CHECKPOINTING:-0}"
+export ENABLE_BF16="${ENABLE_BF16:-1}"
 
 # =========================
 # 6. wandb 监控

@@ -384,6 +384,37 @@ export MEMMAP_OUT_DIR="/mnt/data/Codes/RWKV/ROSA/memmap_out"
 export OUT_DIR="/mnt/data/Codes/RWKV/ROSA/rosa_runs"
 ```
 
+当前中档默认训练配置：
+
+```bash
+export ENABLE_BF16=1
+export TRAIN_TIMING=0
+export ACTIVATION_CHECKPOINTING=0
+
+export SEQ_LEN=2048
+export STRIDE=2048
+export BATCH_SIZE=2
+export GRAD_ACCUM_STEPS=4
+
+export DIM=1536
+export N_LAYERS=24
+export N_HEADS=16
+export N_KV_HEADS=8
+export INTERMEDIATE_SIZE=6144
+
+export TRAIN_NUM_WORKERS=4
+export EVAL_NUM_WORKERS=2
+export DATALOADER_PIN_MEMORY=1
+export DATALOADER_PERSISTENT_WORKERS=1
+```
+
+当前训练脚本已支持的 DataLoader 开关：
+
+- `--train_num_workers`
+- `--eval_num_workers`
+- `--dataloader_pin_memory`
+- `--dataloader_persistent_workers`
+
 当前 FSDP 试跑建议：
 
 - 先继续使用 `online_v1`
