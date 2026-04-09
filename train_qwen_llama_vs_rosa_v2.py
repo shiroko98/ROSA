@@ -68,6 +68,7 @@ from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPay
 from rosa_session import RosaBatchSession
 from rosa_timing import TimingCollector
 from rosa_train_async import maybe_wrap_train_address_prefetch, read_async_prefetch_batch_stats
+from rosa_train_console import format_train_step_console_line
 from rosa_train_monitor import collect_step_system_metrics, reset_cuda_peak_memory
 from rosa_training_cache import build_sequence_online_precomputed_rosa
 from rosa_training_snapshot import build_sequence_online_state_snapshots
@@ -2153,6 +2154,7 @@ def train_one_model(
     resume_checkpoint: Optional[Dict[str, Any]] = None,
     run_name: str = "model",
     wandb_logger: Optional[WandbLogger] = None,
+    train_log_every_steps: int = 0,
 ) -> Dict[str, List[Dict[str, float]]]:
     if distributed_context is None or not distributed_context.enabled:
         model.to(device)
@@ -2310,7 +2312,8 @@ def train_one_model(
                 timing_rows.append(row)
                 step_timing_rows.append(row)
             if should_step:
-                if wandb_logger is not None and wandb_logger.enabled and step_tokens > 0:
+                step_metrics: Dict[str, Any] = {}
+                if step_tokens > 0:
                     step_metrics = {
                         "epoch": epoch,
                         "loss": step_nll / max(1, step_tokens),
@@ -2340,6 +2343,24 @@ def train_one_model(
                             log_cuda_memory=True,
                         )
                     )
+                should_log_console_step = (
+                    step_tokens > 0
+                    and train_log_every_steps > 0
+                    and (global_step == 1 or global_step % train_log_every_steps == 0)
+                    and (distributed_context is None or distributed_context.is_main_process)
+                )
+                if should_log_console_step and step_metrics:
+                    print(
+                        format_train_step_console_line(
+                            run_name=run_name,
+                            epoch=epoch,
+                            global_step=global_step,
+                            metrics=step_metrics,
+                            grad_accum_steps=grad_accum_steps,
+                        ),
+                        flush=True,
+                    )
+                if wandb_logger is not None and wandb_logger.enabled and step_metrics:
                     wandb_logger.log_metrics(step_metrics, step=global_step, prefix=f"{run_name}/train_step")
                     reset_cuda_peak_memory(device, enabled=True)
                 step_nll = 0.0
@@ -2601,6 +2622,7 @@ def run_training_stage(
         resume_checkpoint=resume_checkpoint,
         run_name=stage_name,
         wandb_logger=wandb_logger,
+        train_log_every_steps=args.train_log_every_steps,
     )
     test_metrics = evaluate(
         wrapped_model,
@@ -2746,6 +2768,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="默认按 match len 软门控；加上此开关则不使用长度缩放。")
     parser.add_argument("--train_timing", action="store_true",
                         help="输出训练/评估阶段的同步 timing 统计；在 CUDA 上会加入 synchronize，适合定位慢点，不建议作为默认长期训练配置。")
+    parser.add_argument("--train_log_every_steps", type=int, default=0,
+                        help="按 global_step 向控制台打印训练摘要的间隔；0 表示关闭，只保留 epoch 级日志。")
     parser.add_argument("--wandb", action="store_true",
                         help="启用 Weights & Biases 监控。主进程会按 global_step 持续上报训练指标。")
     parser.add_argument("--wandb_project", type=str, default="ROSA",
@@ -2760,6 +2784,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="wandb tags，逗号分隔。")
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"],
                         help="wandb 模式；offline 会本地缓存，disabled 表示即使传了 --wandb 也不初始化。")
+    parser.add_argument("--wandb_dir", type=str, default="",
+                        help="wandb 本地缓存目录；为空时默认使用 out_dir。")
     parser.add_argument("--out_dir", type=str, default="outputs/rosa_compare")
     return parser
 
@@ -2956,8 +2982,10 @@ def main():
     log(f"ROSA context gate: {args.rosa_context_gate}")
     log(f"ROSA hot cache size: {args.rosa_hot_cache_size}")
     log(f"训练 timing: {args.train_timing}")
+    log(f"train log every steps: {args.train_log_every_steps}")
     log(f"wandb: {args.wandb and args.wandb_mode != 'disabled'}")
     log(f"wandb mode: {args.wandb_mode}")
+    log(f"wandb dir: {args.wandb_dir or args.out_dir}")
     log(f"activation checkpointing: {args.activation_checkpointing}")
     log(f"bf16: {args.bf16}")
     log(f"grad accum steps: {args.grad_accum_steps}")
@@ -3021,6 +3049,7 @@ def main():
         project=args.wandb_project,
         mode=args.wandb_mode,
         out_dir=args.out_dir,
+        wandb_dir=args.wandb_dir,
         entity=args.wandb_entity,
         name=args.wandb_run_name,
         group=args.wandb_group,

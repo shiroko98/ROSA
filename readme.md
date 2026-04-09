@@ -250,8 +250,11 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `--wandb_group`
   - `--wandb_tags`
   - `--wandb_mode online|offline|disabled`
+  - `--wandb_dir`
+  - `--train_log_every_steps`
 - 当前行为：
   - 主进程按 `global_step` 持续上报训练指标，不再等到 epoch 结束
+  - 控制台也可按 `global_step` 持续打印训练摘要，避免长 epoch 时“看起来没有输出”
   - 每次优化器 `step()` 后会上报：
     - `loss / ppl / token_acc / valid_tokens`
     - `rosa_*` 指标
@@ -273,21 +276,27 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - 在 `scripts/server/server_env.sh` 里设置：
     - `ENABLE_WANDB=1`
     - `WANDB_PROJECT`
-    - `WANDB_ENTITY`
     - `WANDB_RUN_NAME`
+    - `WANDB_DIR`（或 `WANDB_SAVE_DIR`）
+    - `WANDB_MODE`
+  - 其余是可选增强项：
+    - `WANDB_ENTITY`
     - `WANDB_GROUP`
     - `WANDB_TAGS`
-    - `WANDB_MODE`
+  - 兼容旧习惯：
+    - 以前的 `wandb_project` -> 现在的 `WANDB_PROJECT`
+    - 以前的 `wandb_exp_name` -> 现在的 `WANDB_RUN_NAME`
+    - 以前的 `wandb_save_dir` -> 现在的 `WANDB_DIR` 或 `WANDB_SAVE_DIR`
 
 示例：
 
 ```bash
 export ENABLE_WANDB=1
 export WANDB_PROJECT=ROSA
-export WANDB_GROUP=online_v1_8gpu
 export WANDB_RUN_NAME=minipile_qwen9b_online_v1
-export WANDB_TAGS=8gpu,ddp,online_v1
+export WANDB_DIR=/mnt/data/Logs/wandb
 export WANDB_MODE=online
+export TRAIN_LOG_EVERY_STEPS=10
 export ENABLE_BF16=1
 
 bash scripts/server/launch_8gpu_ddp_online_v1.sh

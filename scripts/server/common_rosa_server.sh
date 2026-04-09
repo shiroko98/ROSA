@@ -14,7 +14,7 @@ rosa_python() {
   if [[ -n "${PYTHON_BIN:-}" ]]; then
     "${PYTHON_BIN}" "$@"
   elif [[ -n "${CONDA_ENV_NAME:-}" ]]; then
-    conda run -n "${CONDA_ENV_NAME}" python "$@"
+    conda run --no-capture-output -n "${CONDA_ENV_NAME}" python "$@"
   else
     python "$@"
   fi
@@ -135,6 +135,9 @@ rosa_print_launch_header() {
   rosa_print_kv "output dir" "${OUT_DIR:-<unset>}"
   rosa_print_kv "recipe" "${ROSA_RECIPE:-<unset>}"
   rosa_print_kv "online sam impl" "${ROSA_ONLINE_SAM_IMPL:-<unset>}"
+  rosa_print_kv "wandb enabled" "${ENABLE_WANDB:-0}"
+  rosa_print_kv "wandb mode" "${WANDB_MODE:-disabled}"
+  rosa_print_kv "wandb dir" "${WANDB_DIR:-${OUT_DIR:-<unset>}}"
   rosa_print_kv "distributed strategy" "${DISTRIBUTED_STRATEGY:-<unset>}"
   rosa_print_kv "backend" "${DISTRIBUTED_BACKEND:-<unset>}"
   rosa_print_kv "world size" "${NPROC_PER_NODE:-<unset>}"

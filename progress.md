@@ -506,6 +506,14 @@
     - 累积 tokens 进度
     - CUDA 显存当前值与峰值
   - 服务器脚本已支持从 `scripts/server/server_env.sh` 一处开启 `ENABLE_WANDB=1`
+  - 当前已补服务器端训练可观测性增强：
+    - `conda run --no-capture-output`
+    - `WANDB_DIR/WANDB_SAVE_DIR`
+    - `TRAIN_LOG_EVERY_STEPS`
+  - 现在可以兼容旧配置映射：
+    - `wandb_project -> WANDB_PROJECT`
+    - `wandb_exp_name -> WANDB_RUN_NAME`
+    - `wandb_save_dir -> WANDB_DIR/WANDB_SAVE_DIR`
 - 已补 DataLoader 吞吐优化开关：
   - 训练脚本新增：
     - `--train_num_workers`

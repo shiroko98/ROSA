@@ -24,6 +24,7 @@ TRAIN_ARGS=(
   --eval_num_workers "${EVAL_NUM_WORKERS}"
   --epochs "${EPOCHS}"
   --grad_accum_steps "${GRAD_ACCUM_STEPS}"
+  --train_log_every_steps "${TRAIN_LOG_EVERY_STEPS}"
   --lr "${LR}"
   --weight_decay "${WEIGHT_DECAY}"
   --seed "${SEED}"
@@ -66,7 +67,7 @@ if [[ -n "${RESUME_FROM:-}" ]]; then
 fi
 
 if [[ "${ENABLE_WANDB}" == "1" ]]; then
-  TRAIN_ARGS+=(--wandb --wandb_project "${WANDB_PROJECT}" --wandb_mode "${WANDB_MODE}")
+  TRAIN_ARGS+=(--wandb --wandb_project "${WANDB_PROJECT}" --wandb_mode "${WANDB_MODE}" --wandb_dir "${WANDB_DIR}")
   if [[ -n "${WANDB_ENTITY}" ]]; then
     TRAIN_ARGS+=(--wandb_entity "${WANDB_ENTITY}")
   fi

@@ -270,6 +270,10 @@
      - token 累积进度
      - CUDA 显存占用/峰值
    - 服务器脚本统一从 `scripts/server/server_env.sh` 读取 `ENABLE_WANDB` 等开关
+   - 已补训练可观测性增强：
+     - `conda run --no-capture-output`，避免 torchrun 输出被 conda 吞掉
+     - `WANDB_DIR/WANDB_SAVE_DIR` 兼容旧配置
+     - `TRAIN_LOG_EVERY_STEPS`，按 `global_step` 输出控制台训练摘要
 10. 已将服务器默认训练配置切到中档版：
    - `bf16=on`
    - `train_timing=off`

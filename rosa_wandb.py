@@ -58,6 +58,7 @@ def init_wandb_logger(
     project: str,
     mode: str,
     out_dir: str,
+    wandb_dir: Optional[str] = None,
     config: Dict[str, Any],
     entity: Optional[str] = None,
     name: Optional[str] = None,
@@ -74,6 +75,8 @@ def init_wandb_logger(
         log_print(f"[wandb] 初始化失败，已降级为关闭：{exc}")
         return WandbLogger()
 
+    effective_dir = wandb_dir or out_dir
+    log_print(f"[wandb] 正在初始化，project={project} mode={mode} dir={effective_dir}")
     run = wandb.init(
         project=project,
         entity=(entity or None),
@@ -81,7 +84,7 @@ def init_wandb_logger(
         group=(group or None),
         tags=list(tags or []),
         mode=mode,
-        dir=out_dir,
+        dir=effective_dir,
         config=config,
     )
     try:
@@ -89,4 +92,12 @@ def init_wandb_logger(
         wandb.define_metric("*", step_metric="trainer/global_step")
     except Exception:
         pass
+    try:
+        run_url = getattr(run, "url", None)
+    except Exception:
+        run_url = None
+    if run_url:
+        log_print(f"[wandb] 运行已创建：{run_url}")
+    else:
+        log_print("[wandb] 运行已创建。")
     return WandbLogger(run)

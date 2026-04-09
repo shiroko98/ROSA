@@ -1,10 +1,12 @@
 import unittest
+from unittest import mock
 
 import torch
 
 from rosa_optim import RosaOptimizerBundle
 from rosa_train_monitor import collect_step_system_metrics
-from rosa_wandb import WandbLogger, prefixed_wandb_metrics
+from rosa_train_console import format_train_step_console_line
+from rosa_wandb import WandbLogger, init_wandb_logger, prefixed_wandb_metrics
 
 
 class FakeRun:
@@ -12,6 +14,7 @@ class FakeRun:
         self.logged = []
         self.summary = {}
         self.finished = False
+        self.url = "https://wandb.local/run/test"
 
     def log(self, payload, step=None):
         self.logged.append((payload, step))
@@ -59,6 +62,39 @@ class RosaWandbTests(unittest.TestCase):
         self.assertEqual(run.summary["rosa_fused/test/loss"], 1.0)
         self.assertEqual(run.summary["rosa_fused/test/ppl"], 2.0)
         self.assertTrue(run.finished)
+
+    def test_init_wandb_logger_uses_explicit_wandb_dir(self):
+        fake_run = FakeRun()
+
+        class FakeWandbModule:
+            def __init__(self):
+                self.init_kwargs = None
+
+            def init(self, **kwargs):
+                self.init_kwargs = kwargs
+                return fake_run
+
+            def define_metric(self, *args, **kwargs):
+                return None
+
+        fake_wandb = FakeWandbModule()
+        printed = []
+        with mock.patch.dict("sys.modules", {"wandb": fake_wandb}):
+            logger = init_wandb_logger(
+                enabled=True,
+                is_main_process=True,
+                project="ROSA",
+                mode="online",
+                out_dir="/tmp/out",
+                wandb_dir="/tmp/wandb",
+                config={"a": 1},
+                log_print=printed.append,
+            )
+
+        self.assertTrue(logger.enabled)
+        self.assertEqual(fake_wandb.init_kwargs["dir"], "/tmp/wandb")
+        self.assertTrue(any("正在初始化" in line for line in printed))
+        self.assertTrue(any("运行已创建" in line for line in printed))
 
     def test_collect_step_system_metrics_cpu(self):
         metrics = collect_step_system_metrics(
@@ -109,6 +145,32 @@ class RosaWandbTests(unittest.TestCase):
         norms = bundle.grad_norms()
         self.assertAlmostEqual(norms["grad_norm_dense"], 5.0, places=5)
         self.assertAlmostEqual(norms["grad_norm_sparse"], 13.0, places=5)
+
+    def test_format_train_step_console_line_includes_key_metrics(self):
+        line = format_train_step_console_line(
+            run_name="rosa_fused",
+            epoch=1,
+            global_step=10,
+            grad_accum_steps=4,
+            metrics={
+                "loss": 1.25,
+                "ppl": 3.5,
+                "token_acc": 0.75,
+                "valid_tokens": 1024,
+                "tokens_per_s_wall": 2048.0,
+                "step_wall_ms": 88.5,
+                "optimizer_lr_dense": 3e-4,
+                "grad_norm_dense": 1.2,
+                "cuda_max_memory_allocated_mb": 4096.0,
+                "rosa_fire_coverage": 0.5,
+            },
+        )
+
+        self.assertIn("[rosa_fused]", line)
+        self.assertIn("step 10", line)
+        self.assertIn("tok/s 2048.0", line)
+        self.assertIn("step_ms 88.5", line)
+        self.assertIn("max_mem 4096MB", line)
 
 
 if __name__ == "__main__":
