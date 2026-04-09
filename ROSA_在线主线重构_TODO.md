@@ -22,6 +22,7 @@
 - 已完成：训练期地址支路异步化 / overlap（默认主线已启用 next-batch 地址异步预取）
 - 已完成第二版：训练期地址异步预取支持可配置队列深度，并将后台等待 / 准备 / 队列填充率接入 training timing
 - 已完成第一版：`online_sam` sequence 快路径，默认通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`
+- 已完成第一版：`online_sam` sequence 编译型 CPU 实现，当前可通过 `--rosa_online_sam_impl compiled_cpu` 走 C++ 扩展
 - 已完成第一版：训练期 `snapshot + 短 replay`，支持文档级稀疏 state snapshot 与 chunk 起点恢复
 - 已完成第一轮 sweep：小型 `snapshot interval` 对比显示，`snapshot` 对同步地址路径收益明显；在已开启 async overlap 的小配置上，额外收益接近于零
 - 仍保留：`--rosa_online_sam_impl stateful` 作为逐 token SAM 回归/对照实现
@@ -50,8 +51,8 @@
   - 尝试 pinned host buffer，减少主线程等待
   - 在 timing 中单独记录 queue wait / prepare wait / copy wait
 - `online_sam` sequence C++ CPU 实现
-  - 先给 `sam_rosa_predict` 做编译型 CPU 版本
-  - 目标是在不依赖 GPU kernel 的情况下，先消掉 Python 循环和 dict 开销
+  - [x] 先给 `sam_rosa_predict` 做编译型 CPU 版本
+  - [x] 目标是在不依赖 GPU kernel 的情况下，先消掉 Python 循环和 dict 开销
 - `online_sam` sequence CUDA/Triton 实现
   - 目标对象是训练期 `[B, T]` 的 sequence addressing
   - 不直接翻译 decode `update_one()`，而是做 batch-sequence fused kernel
@@ -91,7 +92,7 @@
 | 未开始 | P2 | tokenizer compression / canonicalization | 压缩 token 流版 AddressEngine | 能在压缩流上生成地址，并与原 token 流做对照实验 | 压缩可能伤害语义边界 | 先做轻量 canonicalization，再做压缩流实验 |
 | 未开始 | P2 | token value -> memory value 升级 | 更正式的 Memory Value 路径 | value 不再只是 token embedding，而是可学习 memory payload | value 设计过早复杂化会拖慢主线收敛 | 先从轻量 memory value 开始，再考虑分块/低秩/量化 |
 | 未开始 | P2 | 稀疏活跃项训练与分片 ValueStore | 大表训练基础设施 | 前向/反向只 gather 活跃项，支持更大 memory 表 | 分片/通信复杂度高 | 参考 Engram 的活跃项 gather 思路，先做单机稀疏版，再考虑多卡 |
-| 进行中（已完成 fast v1） | P2 | 在线 SAM sequence 路径下沉到高性能实现 | 比 `SuffixAutomatonRosaState.update_one()` 更快的训练期 sequence 地址引擎 | 训练期 `online_seq + online_sam` 不再主要耗时在 Python 逐 token 状态推进；与现有 step/session 语义保持一致 | 若训练 sequence 路径与推理 step 路径语义漂移，会破坏一致性 | 保留 step/session 的真实在线 SAM；单独为 `forward_seq()` 实现 array-backed / fused SAM sequence 版本，并做逐位置一致性回归 |
+| 进行中（已完成 fast v1 + compiled_cpu v1） | P2 | 在线 SAM sequence 路径下沉到高性能实现 | 比 `SuffixAutomatonRosaState.update_one()` 更快的训练期 sequence 地址引擎 | 训练期 `online_seq + online_sam` 不再主要耗时在 Python 逐 token 状态推进；与现有 step/session 语义保持一致 | 若训练 sequence 路径与推理 step 路径语义漂移，会破坏一致性 | 保留 step/session 的真实在线 SAM；单独为 `forward_seq()` 实现 array-backed / fused SAM sequence 版本，并做逐位置一致性回归 |
 | 进行中（已完成 overlap v1） | P2 | 训练期地址支路异步化 / overlap | 不改变 `online_seq` 语义的训练加速方案 | 训练 step 中地址生成不再完全阻塞主干；能比较同步 / worker 前移 / next-batch overlap 三种模式 | 若重新退化成离线持久 precompute，会削弱在线主线的一致性 | 保持 `AddressEngine.forward_seq()` 为主线定义；优先尝试 CPU worker 临时预取本 step address，再尝试与 GPU 主干重叠计算 next batch address |
 | 未开始 | P2 | 训练期 memory 范围控制与 bookmark/window 实验 | 不依赖 full doc prefix 的轻量在线训练配置 | 在较短 memory window 下维持大部分收益，同时显著降低地址构建规模 | window 过短会伤害匹配覆盖率 | 先支持固定 tail window，再实验 bookmark / anchor / canonicalization，比较 coverage / speed / loss |
 | 进行中（已完成 sparse snapshot + replay v1） | P2 | 文档级状态快照与 chunk 起点增量恢复 | 比“整文档地址全缓存”更省内存的训练执行模式 | 大数据集下无需为每个 sample 复制 `rosa_precomputed_*`，可通过起点快照 + 短 replay 恢复在线状态 | snapshot/restore 的正确性和 clone 成本需要严格验证 | v1 已支持文档级稀疏 snapshot、batch 级 restore 与 chunk 起点 replay；后续继续做更轻量序列化、磁盘化与更细粒度间隔策略 |

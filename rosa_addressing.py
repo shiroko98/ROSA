@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 
+from rosa_cpp_extension import load_rosa_sam_cpu_extension
 from rosa_runtime import RosaAddressBatch
 
 
@@ -657,6 +658,49 @@ def _sam_sequence_address_meta_with_memory(
     return out
 
 
+def _compiled_sam_sequence_address_meta_with_memory(
+    input_ids: torch.Tensor,
+    memory_ids: Optional[torch.Tensor],
+    min_match_len: int,
+    pad_id: int,
+    special_ids: Optional[set] = None,
+    forbid_special_target: bool = True,
+) -> List[List[AddressMeta]]:
+    bsz, seqlen = input_ids.shape
+    special_ids = special_ids or set()
+    seqs = input_ids.detach().cpu().tolist()
+    mems = memory_ids.detach().cpu().tolist() if memory_ids is not None else [[] for _ in range(bsz)]
+
+    combined_rows: List[List[int]] = []
+    offsets: List[int] = []
+    for b in range(bsz):
+        seq = seqs[b]
+        mem = _pad_filtered_mem(mems[b], pad_id)
+        combined_rows.append(mem + seq)
+        offsets.append(len(mem))
+
+    ext = load_rosa_sam_cpu_extension()
+    pred_rows, match_rows = ext.sam_rosa_predict_many(combined_rows, min_match_len)
+
+    out: List[List[AddressMeta]] = []
+    for pred_row, match_row, offset in zip(pred_rows, match_rows, offsets):
+        sliced_preds = pred_row[offset:offset + seqlen]
+        sliced_match_lens = match_row[offset:offset + seqlen]
+        row: List[AddressMeta] = []
+        for pred, raw_m in zip(sliced_preds, sliced_match_lens):
+            special_mask = pred >= 0 and forbid_special_target and pred in special_ids
+            row.append(
+                build_address_meta(
+                    pred,
+                    raw_m,
+                    min_match_len=min_match_len,
+                    special_mask=special_mask,
+                )
+            )
+        out.append(row)
+    return out
+
+
 def online_sam_address_meta_with_memory(
     input_ids: torch.Tensor,
     memory_ids: Optional[torch.Tensor],
@@ -668,6 +712,15 @@ def online_sam_address_meta_with_memory(
 ) -> List[List[AddressMeta]]:
     if implementation == "stateful":
         return _stateful_online_sam_address_meta_with_memory(
+            input_ids=input_ids,
+            memory_ids=memory_ids,
+            min_match_len=min_match_len,
+            pad_id=pad_id,
+            special_ids=special_ids,
+            forbid_special_target=forbid_special_target,
+        )
+    if implementation == "compiled_cpu":
+        return _compiled_sam_sequence_address_meta_with_memory(
             input_ids=input_ids,
             memory_ids=memory_ids,
             min_match_len=min_match_len,
@@ -820,6 +873,12 @@ def sam_rosa_predict(seq: Sequence[int], min_match_len: int = 1) -> Tuple[List[i
             v = link[v]
 
     return pred, match_len
+
+
+def sam_rosa_predict_compiled_cpu(seq: Sequence[int], min_match_len: int = 1) -> Tuple[List[int], List[int]]:
+    ext = load_rosa_sam_cpu_extension()
+    pred, match_len = ext.sam_rosa_predict(list(seq), min_match_len)
+    return list(pred), list(match_len)
 
 
 def sam_rosa_address_meta_with_memory(

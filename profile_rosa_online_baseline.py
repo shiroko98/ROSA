@@ -48,7 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"])
     parser.add_argument("--rosa_seq_address_mode", type=str, default="reference_backend",
                         choices=["reference_backend", "online_exact", "online_sam"])
-    parser.add_argument("--rosa_online_sam_impl", type=str, default="fast", choices=["fast", "stateful"])
+    parser.add_argument("--rosa_online_sam_impl", type=str, default="fast", choices=["fast", "compiled_cpu", "stateful"])
     parser.add_argument("--enable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--disable_rosa_train_address_cache", action="store_true")
     parser.add_argument("--rosa_context_gate", action="store_true")

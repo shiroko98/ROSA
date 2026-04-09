@@ -16,6 +16,7 @@
 - 当前进展：`online_v2` 配方已落地，把 `per_layer ValueStore` 正式接入在线训练主线实验入口，训练 / profile / sweep 现在都能直接通过 recipe 复用这组配置
 - 当前进展：训练期 `snapshot + 短 replay` 第一版已落地，当前可在文档级缓存稀疏 `RosaStateSnapshot`，并在 chunk 起点恢复在线状态而不必为每个 sample 复制整段地址表
 - 当前进展：训练期地址异步预取 v2 已落地，当前支持可配置 `prefetch depth`，并把后台等待 / 准备 / 队列填充率接入 training timing
+- 当前进展：`online_sam` 的编译型 CPU sequence 路径已落地，当前可通过 `--rosa_online_sam_impl compiled_cpu` 走 C++ 扩展
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -181,6 +182,19 @@
   - 当前结论：
     - 更深的预取队列已经可用，但这组小配置里默认 `depth=1` 仍然最好
     - `depth>1` 的价值更偏向长前缀 / 更重地址支路 / 后台线程开始吃紧时的稳定性提升
+- 编译型 CPU microbenchmark（`B=4, T=128, M=256`）当前结果：
+  - `stateful ~3.984ms`
+  - `fast ~2.723ms`
+  - `compiled_cpu ~0.944ms`
+  - 当前结论：
+    - `compiled_cpu` 已经明显快于现有 Python `fast`
+    - 这条路径现在适合作为下一阶段主推的高性能 sequence 实现候选
+- 同配置训练 smoke（`16/4/4 docs`, `online_v1 + async depth=1`）当前结果：
+  - `fast`：`step ~36.20ms`，`async_prep ~24.51ms`
+  - `compiled_cpu`：`step ~35.22ms`，`async_prep ~10.55ms`
+  - 当前结论：
+    - 编译型 CPU 版已经显著压低了后台地址准备时间
+    - 端到端 step 也出现了小幅但稳定的改善
 
 ## 下一任务
 
@@ -188,7 +202,7 @@
 2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
 3. 训练性能优化后续优先项：
    - 地址支路 CPU worker 前移 / next-batch overlap（继续作为默认主线优化；当前 queue depth 可调，但默认先保持 `1`）
-   - `online_sam` sequence 快路径进一步下沉到 C++/CUDA/Triton
+   - `online_sam` sequence 快路径进一步下沉到 CUDA/Triton（C++ CPU v1 已完成）
    - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔（更偏 sync / 无 async / 大数据场景）
    - memory window / bookmark（保留为可选工程折中，而非默认主线）
 4. 当前已用 `--train_timing` 验证并完成两轮修复：

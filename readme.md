@@ -72,6 +72,7 @@ git log --oneline -5
   - `--rosa_seq_address_mode online_sam`
 - `online_sam` 额外支持：
   - `--rosa_online_sam_impl fast`
+  - `--rosa_online_sam_impl compiled_cpu`
   - `--rosa_online_sam_impl stateful`
 - 含义：
   - `online_seq`：新的训练主线，数据集默认只提供 `input_ids / labels / optional_memory`，由前向内部调用 `AddressEngine.forward_seq()`
@@ -80,6 +81,7 @@ git log --oneline -5
   - `online_exact`：按左上下文顺序扫描整段，生成 `[B, T]` 地址结果
   - `online_sam`：使用真正的在线 suffix automaton state 生成整段/逐步地址
   - `online_sam + fast`：训练/sequence 路径使用整段 `sam_rosa_predict` 快路径
+  - `online_sam + compiled_cpu`：训练/sequence 路径使用编译型 CPU C++ 扩展
   - `online_sam + stateful`：训练/sequence 路径也严格复用逐 token stateful SAM
 - 当前用途：
   - 作为在线训练主线的第一版统一入口
@@ -93,7 +95,8 @@ git log --oneline -5
   - 当前训练默认会开启“地址异步预取”：主干训练当前 batch 时，CPU 后台准备下一 batch 的在线地址
   - 如需关闭，可加：`--disable_rosa_train_address_async`
   - 如需调整后台预取队列深度，可加：`--rosa_train_address_async_prefetch_batches N`
-  - 当前训练默认推荐：`--rosa_online_sam_impl fast`
+- 当前训练默认推荐：`--rosa_online_sam_impl fast`
+- 如果本机已具备 C++ 编译环境，当前更高性能的候选实现是：`--rosa_online_sam_impl compiled_cpu`
   - 训练 / 评测输出里可直接看地址来源统计：
     - `rosa_address_source_precomputed`
     - `rosa_address_source_online_seq`
@@ -256,6 +259,14 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - depth 2：`step ~103.62ms`，`async_wait ~0.03ms`
   - depth 4：`step ~104.27ms`，`async_wait ~0.03ms`
   - 说明更深的预取队列已经可用，但在这组小配置里默认 `depth=1` 仍然最好；`depth>1` 更偏向在更长前缀和更重地址支路下提供稳定性
+- 当前一次编译型 CPU microbenchmark（`B=4, T=128, M=256`）：
+  - `stateful ~3.984ms`
+  - `fast ~2.723ms`
+  - `compiled_cpu ~0.944ms`
+- 当前一次同配置训练 smoke（`16/4/4 docs`, `online_v1 + async depth=1`）：
+  - `fast`：`step ~36.20ms`，`async_prep ~24.51ms`
+  - `compiled_cpu`：`step ~35.22ms`，`async_prep ~10.55ms`
+  - 说明编译型 CPU 版已经显著减少后台地址准备时间，并带来小幅端到端训练收益
 - 当前一次纯地址 microbenchmark（`B=4, T=128, M=256`）：
   - `online_sam stateful ~4.734ms`
   - `online_sam fast ~1.836ms`

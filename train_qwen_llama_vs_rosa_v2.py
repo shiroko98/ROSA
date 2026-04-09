@@ -2394,8 +2394,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_seq_address_mode", type=str, default="online_exact",
                         choices=["reference_backend", "online_exact", "online_sam"],
                         help="reference_backend 使用现有整段 reference 地址逻辑；online_exact 使用 exact-list 在线扫描；online_sam 使用真正的在线 suffix automaton state。")
-    parser.add_argument("--rosa_online_sam_impl", type=str, default="fast", choices=["fast", "stateful"],
-                        help="online_sam 的 sequence 实现。fast 使用整段 SAM 预测快路径；stateful 保留逐 token 状态机回归路径。decode/session 仍使用 stateful update_one。")
+    parser.add_argument("--rosa_online_sam_impl", type=str, default="fast", choices=["fast", "compiled_cpu", "stateful"],
+                        help="online_sam 的 sequence 实现。fast 使用纯 Python 整段 SAM 快路径；compiled_cpu 使用编译型 CPU 扩展；stateful 保留逐 token 状态机回归路径。decode/session 仍使用 stateful update_one。")
     parser.add_argument("--rosa_context_gate", action="store_true",
                         help="启用 Engram 风格的 context-aware gate。")
     parser.add_argument("--rosa_hot_cache_size", type=int, default=0,

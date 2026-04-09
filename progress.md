@@ -35,6 +35,7 @@
 - [x] 在线主线 P2: 文档级状态快照与 chunk 起点恢复 v1
 - [x] 在线主线 P2: snapshot interval sweep（sync/async）
 - [x] 在线主线 P2: 训练地址异步预取 v2（可配置预取深度 + 更细 timing）
+- [x] 在线主线 P2: `online_sam` 编译型 CPU sequence 实现 v1
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -235,6 +236,21 @@
   - 当前结论：
     - 更深预取队列已经可用，但这组小配置里 `depth=1` 仍然最好
     - 当前默认先保持 `1`，后续再在更长前缀 / 更重负载下继续评估
+- 当前编译型 CPU 实现已新增：
+  - `cpp_extensions/rosa_sam_cpu_extension.cpp`
+  - `build_rosa_sam_cpu_extension.py`
+  - `rosa_cpp_extension.py`
+  - `--rosa_online_sam_impl compiled_cpu`
+- 当前一次纯地址 microbenchmark（`B=4, T=128, M=256`）：
+  - `stateful ~3.984ms`
+  - `fast ~2.723ms`
+  - `compiled_cpu ~0.944ms`
+- 当前一次同配置训练 smoke（`16/4/4 docs`, `online_v1 + async depth=1`）：
+  - `fast`：`step ~36.20ms`，`async_prep ~24.51ms`
+  - `compiled_cpu`：`step ~35.22ms`，`async_prep ~10.55ms`
+  - 当前结论：
+    - 编译型 CPU 版已经把 sequence 地址层成本进一步压低
+    - 后台地址准备时间也明显缩短，端到端训练 step 有小幅正向收益
 
 ## 自我验证记录
 
