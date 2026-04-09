@@ -11,7 +11,8 @@
   - 当前顶层历史导出：`env/model_current_from_history.yml`
   - 服务器推荐基础环境：`env/model_server_environment.yml`
   - 服务器 PyPI 依赖：`env/model_server_pip_requirements.txt`
-  - 服务器安装脚本：`scripts/install_model_env_server.sh`
+  - 服务器环境脚本：`scripts/server/server_env.sh`
+  - 服务器安装脚本：`scripts/server/install_model_env_server.sh`
 
 ## 常用命令
 
@@ -40,14 +41,17 @@ git log --oneline -5
     - 服务器上推荐使用的 Linux 基础 conda 环境
   - `env/model_server_pip_requirements.txt`
     - 当前环境里需要的 PyPI 包
-  - `scripts/install_model_env_server.sh`
+  - `scripts/server/server_env.sh`
+    - 统一维护代理、conda 环境名、模型路径、数据路径、输出路径
+    - 服务器相关脚本默认都会先读取这一个文件
+  - `scripts/server/install_model_env_server.sh`
     - 服务器上一键创建环境、安装 `torch`/`transformers`、安装 PyPI 包、可选构建编译型 CPU 地址扩展
 
 推荐服务器安装方式：
 
 ```bash
 cd /path/to/ROSA
-bash scripts/install_model_env_server.sh
+bash scripts/server/install_model_env_server.sh
 ```
 
 常用可调变量：
@@ -61,7 +65,7 @@ export TORCHAUDIO_VERSION=2.5.1
 export TRANSFORMERS_VERSION=5.4.0
 export BUILD_ROSA_CPU_EXTENSION=1
 
-bash scripts/install_model_env_server.sh
+bash scripts/server/install_model_env_server.sh
 ```
 
 当前一个特别需要注意的点：
@@ -253,19 +257,24 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 ## 8 卡服务器启动脚本
 
 - 这些脚本面向 Linux 服务器 Bash 环境，路径请统一使用 Linux/POSIX 形式，例如 `/data/...`，不要使用 `D:/...`
-- 脚本目录：`scripts/`
+- 服务器脚本主目录：`scripts/server/`
+- 统一环境入口：
+  - `scripts/server/server_env.sh`
+  - 以后优先只改这一个文件，不需要在多个启动脚本里重复改路径
 - 公共环境与辅助函数：
-  - `scripts/common_rosa_server.sh`
+  - `scripts/server/common_rosa_server.sh`
 - 预分词数据准备：
-  - `scripts/prepare_memmap_dataset.sh`
+  - `scripts/server/prepare_memmap_dataset.sh`
 - 一键首跑脚本：
-  - `scripts/server_first_run_8gpu_ddp_online_v1.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v1.sh`
 - 稳妥首跑：
-  - `scripts/launch_8gpu_ddp_online_v1.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v1.sh`
 - 最新建模特性版：
-  - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
 - FSDP 试跑版：
-  - `scripts/launch_8gpu_fsdp_online_v1.sh`
+  - `scripts/server/launch_8gpu_fsdp_online_v1.sh`
+- 兼容入口：
+  - `scripts/*.sh` 仍保留为 wrapper，方便旧命令继续可用，但后续建议统一从 `scripts/server/` 调用
 
 推荐顺序：
 
@@ -287,28 +296,39 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 一个最常用的 8 卡首跑方式：
 
 ```bash
-export CONDA_ENV_NAME=model
-export TOKENIZER_NAME_OR_PATH=/data/models/Qwen3.5-0.8B
-export TRAIN_DATA_PATH=/data/minipile/train.jsonl
-export VAL_DATA_PATH=/data/minipile/val.jsonl
-export TEST_DATA_PATH=/data/minipile/test.jsonl
-export MEMMAP_OUT_DIR=/data/rosa_runs/minipile_memmap
-export OUT_DIR=/data/rosa_runs/online_v1_ddp
-
-bash scripts/launch_8gpu_ddp_online_v1.sh
+bash scripts/server/launch_8gpu_ddp_online_v1.sh
 ```
 
 如果你想“一条命令从装环境跑到开训”，直接用：
 
 ```bash
-bash scripts/server_first_run_8gpu_ddp_online_v1.sh
+bash scripts/server/server_first_run_8gpu_ddp_online_v1.sh
 ```
 
 如果已经提前构好了 manifest，也可以直接指定：
 
 ```bash
 export PRETOKENIZED_MANIFEST=/data/rosa_runs/minipile_memmap/dataset_manifest.json
-bash scripts/launch_8gpu_ddp_online_v1.sh
+bash scripts/server/launch_8gpu_ddp_online_v1.sh
+```
+
+针对当前这台服务器，推荐先在 `scripts/server/server_env.sh` 里维护这些默认值：
+
+```bash
+export SOCKS_PROXY="socks5://192.168.9.1:7893"
+export HTTPS_PROXY="http://192.168.9.1:7893"
+export HTTP_PROXY="http://192.168.9.1:7893"
+
+export ENV_NAME="ROSA"
+export CONDA_ENV_NAME="${ENV_NAME}"
+export PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu124"
+
+export TOKENIZER_NAME_OR_PATH="/mnt/lab/Models/qwen/Qwen3.5-9B"
+export TRAIN_DATA_PATH="/mnt/data/Datas/minipile/jsonl/train-*.jsonl"
+export VAL_DATA_PATH="/mnt/data/Datas/minipile/jsonl/validation-00000-of-00001-a2192e61a091cecb.jsonl"
+export TEST_DATA_PATH="/mnt/data/Datas/minipile/jsonl/validation-00000-of-00001-a2192e61a091cecb.jsonl"
+export MEMMAP_OUT_DIR="/mnt/data/Codes/RWKV/ROSA/memmap_out"
+export OUT_DIR="/mnt/data/Codes/RWKV/ROSA/rosa_runs"
 ```
 
 当前 FSDP 试跑建议：

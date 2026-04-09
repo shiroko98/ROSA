@@ -231,11 +231,13 @@
    - async overlap 把训练中等待地址的成本压到近零
    - `fast online_sam` 把纯 sequence 地址层成本压到 `stateful` 的约 `39%`
 6. 已补 8 卡服务器脚本：
-   - `scripts/prepare_memmap_dataset.sh`
-   - `scripts/launch_8gpu_ddp_online_v1.sh`
-   - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
-   - `scripts/launch_8gpu_fsdp_online_v1.sh`
-   - `scripts/server_first_run_8gpu_ddp_online_v1.sh`
+   - 主目录改为 `scripts/server/`
+   - `scripts/server/server_env.sh`
+   - `scripts/server/prepare_memmap_dataset.sh`
+   - `scripts/server/launch_8gpu_ddp_online_v1.sh`
+   - `scripts/server/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+   - `scripts/server/launch_8gpu_fsdp_online_v1.sh`
+   - `scripts/server/server_first_run_8gpu_ddp_online_v1.sh`
    当前服务器首跑顺序：
    - `DDP + online_v1`
    - `FSDP + online_v1`
@@ -244,10 +246,11 @@
    - `env/model_current_from_history.yml`
    - `env/model_server_environment.yml`
    - `env/model_server_pip_requirements.txt`
-   - `scripts/install_model_env_server.sh`
+   - `scripts/server/install_model_env_server.sh`
    当前原则：
    - 不直接复用 Windows 全量 `conda env export`
    - 服务器按 Linux 基础 conda 环境 + 单独 pip 安装来复现
+   - 服务器环境名与训练脚本使用的 `CONDA_ENV_NAME` 现已统一从 `server_env.sh` 继承
 8. 已将预分词 `memmap` 构建升级为：
    - explicit split 路径流式读写
    - 可选多进程分词

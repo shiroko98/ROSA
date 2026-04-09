@@ -457,11 +457,13 @@
     - 当前本地行分片表不会自动变成跨卡 all-to-all memory 表
     - 当前 FSDP 保存仍是 full-state 形态，先满足“8 卡可跑”，后续再继续优化
 - 8 卡服务器脚本已补齐：
-  - `scripts/prepare_memmap_dataset.sh`
-  - `scripts/launch_8gpu_ddp_online_v1.sh`
-  - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
-  - `scripts/launch_8gpu_fsdp_online_v1.sh`
-  - `scripts/server_first_run_8gpu_ddp_online_v1.sh`
+  - 主目录：`scripts/server/`
+  - `scripts/server/server_env.sh`
+  - `scripts/server/prepare_memmap_dataset.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v1.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+  - `scripts/server/launch_8gpu_fsdp_online_v1.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v1.sh`
   - 当前脚本已接入：
     - `memmap` 数据集
     - 编译型 CPU `online_sam`
@@ -477,11 +479,12 @@
   - `env/model_current_from_history.yml`
   - `env/model_server_environment.yml`
   - `env/model_server_pip_requirements.txt`
-  - `scripts/install_model_env_server.sh`
+  - `scripts/server/install_model_env_server.sh`
   - 当前结论：
     - 不能直接把 Windows 全量 `conda env export` 原样拿去 Linux 服务器
     - 现在已经改成“Linux 基础 conda 环境 + 单独 pip 依赖 + 可选 CPU 扩展构建”的迁移方式
     - 当前本机 `transformers` 元数据与运行时导入版本不一致，服务器脚本默认按运行时版本 `5.4.0` 安装
+    - 服务器脚本现在统一从 `scripts/server/server_env.sh` 继承代理、环境名和路径，不再需要分散修改多个脚本
 - 预分词 `memmap` 构建已完成第二版改造：
   - 新增 `rosa_memmap_builder.py`
   - explicit split 路径改成流式读取、流式分词、流式写入 `tokens.bin`
