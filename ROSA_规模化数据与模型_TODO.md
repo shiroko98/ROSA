@@ -1,0 +1,73 @@
+# ROSA 规模化数据与模型路线图（TODO）
+
+面向“大数据集 + 大模型 + 更重 memory backend”的专项路线图。目标不是替代在线主线，而是在保持 `online_seq` 主线定义不变的前提下，把数据、训练、参数与系统吞吐扩展到更大规模。
+
+## 状态说明
+
+- `已完成`：已经实现、验证并可在当前主线中复用
+- `进行中`：已有第一版实现，但还未达到规模化可长期使用的形态
+- `未开始`：尚未进入工程实现
+
+## 当前优先级
+
+1. 预分词 + `memmap`/二进制数据集管线
+2. 稀疏 / 分片 `ValueStore`
+3. 大模型训练基础设施
+4. 地址引擎 GPU/Triton/CUDA 路径
+
+## 主表
+
+| 状态 | 优先级 | 任务 | 目标输出 | 完成标准 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| 进行中 | P0 | 预分词 + `memmap`/二进制数据集管线 | 可复用的数据构建脚本、manifest、训练加载器 | 不再需要把全部 token/sample 常驻 Python list；`doc_local + online_seq` 可直接从预分词二进制数据训练 | 当前第一优先级 |
+| 未开始 | P1 | 文档级索引与按需切片 | 文档偏移、长度、chunk 索引按需读取 | dataset `__getitem__` 动态切片，不复制大块 token | 与 `memmap` 主任务配套 |
+| 未开始 | P1 | 稀疏 / 分片 `ValueStore` | 活跃项 gather + 可扩展表存储 | `per_layer` 不再线性吃完整词表乘层数的参数量 | 参考 Engram 的活跃项思路 |
+| 未开始 | P1 | 大模型训练基础设施 | activation checkpointing / 更稳 checkpoint / 梯度累积策略 | 大模型训练不中断、可恢复、显存可控 | 之后再接 FSDP/ZeRO |
+| 未开始 | P2 | 分布式训练 | FSDP/ZeRO 训练路径 | 单机多卡和更大模型训练可用 | 不与当前小实验入口耦死 |
+| 未开始 | P2 | 地址引擎 GPU/Triton/CUDA 实现 | `[B, T]` 训练 sequence addressing fused kernel | 训练期地址生成不再主要受 CPU 约束 | 优先 sequence 路径，不先改 decode step |
+| 未开始 | P2 | 训练数据预取与拷贝流水线 | 数据读取、地址准备、Host->Device 拷贝分阶段 | 数据管线不再拖慢 GPU 利用率 | 与训练 timing 打通 |
+| 未开始 | P2 | 状态快照磁盘化 / 轻量化 | 可落盘的 snapshot 索引与恢复 | 长文档下恢复更快、占用更低 | 仅在需要 full-history 时启用 |
+| 未开始 | P3 | `ROSA-DocMemory` 规模化接入 | 外部文档 memory 构建与运行时注入 | 不仅能跑通，还能在大数据下稳定维护 memory source | 在数据底座稳定后推进 |
+| 未开始 | P3 | `ROSA × Engram` hybrid memory | learned memory + external memory 双分支 | 参数化 memory 与文档 memory 共存并可控 | 依赖前面的表存储与稀疏化 |
+
+## 本轮任务拆分
+
+### 任务 A：预分词构建
+
+- 输入：
+  - 原始 `text/json/jsonl`
+  - tokenizer
+  - split 配置
+- 输出：
+  - `tokens.bin`
+  - `offsets.npy`
+  - `lengths.npy`
+  - `manifest.json`
+- 验证：
+  - 文档数、token 总数、split 元数据可复现
+  - 与现有 `tokenize_docs()` 结果逐文档一致
+
+### 任务 B：`memmap` 训练数据集
+
+- 目标：
+  - 不再把所有 sample 预展平成 Python list
+  - 文档级存储，sample 级按需切片
+- 验证：
+  - `input_ids / labels / rosa_memory_ids` 与现有 `DocChunkDataset` 对齐
+  - `doc_local + online_seq` 小样本训练可直接运行
+
+### 任务 C：训练入口兼容
+
+- 新管线必须与现有 raw 数据路径并存
+- 允许：
+  - 老路径继续跑回归
+  - 新路径通过 manifest 显式启用
+- 验证：
+  - CLI 可切换
+  - 报告中能明确打印当前数据来源
+
+## 当前结论
+
+- 规模化阶段最先要解决的不是更多建模细节，而是数据与系统底座。
+- 当前的 `DocChunkDataset` 更适合中小规模实验，不适合大数据长期训练。
+- 第一优先级已经明确：先完成“预分词 + `memmap`/二进制数据集管线”。

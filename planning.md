@@ -8,6 +8,7 @@
 
 - 分支：`codex/online-rosa-p0-foundation`
 - 迭代主题：在线主线重构准备
+- 规模化专项：新增 `ROSA_规模化数据与模型_TODO.md`，把“大数据集 / 大模型 / 更重 memory backend”路线单独拆出，避免和在线主线任务混在一起
 - 当前状态：已完成在线主线 `P1-3`、`P1-2`、`P1-4`、`P1-1` 与 `P1-5`；suffix automaton state、统一 session 生命周期、prefetch/cache 主线、在线训练 V1 配方和统一层位 sweep 协议都已接入
 - 当前补充优化：已完成在线训练地址缓存，将 `online_seq + online_exact/online_sam` 的训练期地址构建前移到数据集阶段，优先缓解 `model_rosa_address` 瓶颈
 - 当前策略调整：训练地址缓存不再作为默认主路径，后续以“异步地址支路 + 高性能 SAM sequence 实现”为优先优化方向
@@ -17,6 +18,7 @@
 - 当前进展：训练期 `snapshot + 短 replay` 第一版已落地，当前可在文档级缓存稀疏 `RosaStateSnapshot`，并在 chunk 起点恢复在线状态而不必为每个 sample 复制整段地址表
 - 当前进展：训练期地址异步预取 v2 已落地，当前支持可配置 `prefetch depth`，并把后台等待 / 准备 / 队列填充率接入 training timing
 - 当前进展：`online_sam` 的编译型 CPU sequence 路径已落地，当前可通过 `--rosa_online_sam_impl compiled_cpu` 走 C++ 扩展
+- 当前新任务：开始落地“预分词 + `memmap`/二进制数据集管线”，目标是让 `doc_local + online_seq` 在不把全部 token/sample 常驻 Python list 的前提下直接训练
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”

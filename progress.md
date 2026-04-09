@@ -36,6 +36,8 @@
 - [x] 在线主线 P2: snapshot interval sweep（sync/async）
 - [x] 在线主线 P2: 训练地址异步预取 v2（可配置预取深度 + 更细 timing）
 - [x] 在线主线 P2: `online_sam` 编译型 CPU sequence 实现 v1
+- [x] 建立“规模化数据与模型”独立 TODO
+- [ ] 规模化 P0: 预分词 + `memmap`/二进制数据集管线
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
