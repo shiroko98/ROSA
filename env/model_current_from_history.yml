@@ -1,0 +1,17 @@
+name: model
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - torchvision
+  - torchaudio
+  - ca-certificates
+  - openssl
+  - sentencepiece
+  - matplotlib
+  - umap-learn
+  - transformers
+  - prompt_toolkit
+  - ffmpeg
+  - plotly
+  - pygame

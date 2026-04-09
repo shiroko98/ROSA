@@ -7,6 +7,11 @@
 - 主测试入口：`tests/test_train_qwen_llama_vs_rosa_v2.py`
 - 地址/状态模块：`rosa_addressing.py`
 - 在线 session 模块：`rosa_session.py`
+- 环境导出文件：
+  - 当前顶层历史导出：`env/model_current_from_history.yml`
+  - 服务器推荐基础环境：`env/model_server_environment.yml`
+  - 服务器 PyPI 依赖：`env/model_server_pip_requirements.txt`
+  - 服务器安装脚本：`scripts/install_model_env_server.sh`
 
 ## 常用命令
 
@@ -19,6 +24,54 @@ python -m unittest discover -s tests
 git status --short --branch
 git log --oneline -5
 ```
+
+## 环境导出与服务器安装
+
+- 不建议直接把 Windows 上的完整 `conda env export` 原样拿到 Linux 服务器安装。
+  - 原因：
+    - 包含 Windows build string
+    - 包含本机 `prefix`
+    - 很多底层依赖是平台绑定的
+- 当前仓库里已经拆成两层：
+  - `env/model_current_from_history.yml`
+    - 记录当前环境最初显式安装过的顶层包
+    - 适合做“本机环境来源备份”
+  - `env/model_server_environment.yml`
+    - 服务器上推荐使用的 Linux 基础 conda 环境
+  - `env/model_server_pip_requirements.txt`
+    - 当前环境里需要的 PyPI 包
+  - `scripts/install_model_env_server.sh`
+    - 服务器上一键创建环境、安装 `torch`/`transformers`、安装 PyPI 包、可选构建编译型 CPU 地址扩展
+
+推荐服务器安装方式：
+
+```bash
+cd /path/to/ROSA
+bash scripts/install_model_env_server.sh
+```
+
+常用可调变量：
+
+```bash
+export ENV_NAME=model
+export PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+export TORCH_VERSION=2.5.1
+export TORCHVISION_VERSION=0.20.1
+export TORCHAUDIO_VERSION=2.5.1
+export TRANSFORMERS_VERSION=5.4.0
+export BUILD_ROSA_CPU_EXTENSION=1
+
+bash scripts/install_model_env_server.sh
+```
+
+当前一个特别需要注意的点：
+
+- 本机 `model` 环境里的 `transformers` 元数据与运行时导入版本不一致：
+  - `pip show transformers` 显示 `4.51.3`
+  - `import transformers; transformers.__version__` 显示 `5.4.0`
+- 为了复现当前实际运行态，服务器安装脚本默认按 `5.4.0` 安装。
+- 如果你后面决定统一回 `4.51.3`，只需要改：
+  - `export TRANSFORMERS_VERSION=4.51.3`
 
 ## 预分词 + `memmap` 数据集
 

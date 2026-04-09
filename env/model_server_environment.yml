@@ -1,0 +1,18 @@
+name: model
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - ca-certificates
+  - openssl
+  - sentencepiece
+  - matplotlib
+  - umap-learn
+  - prompt_toolkit
+  - ffmpeg
+  - plotly
+  - pygame

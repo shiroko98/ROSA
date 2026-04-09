@@ -239,6 +239,14 @@
    - `DDP + online_v1`
    - `FSDP + online_v1`
    - `DDP + online_v2_sparse_sharded`
+7. 已补服务器环境迁移文件：
+   - `env/model_current_from_history.yml`
+   - `env/model_server_environment.yml`
+   - `env/model_server_pip_requirements.txt`
+   - `scripts/install_model_env_server.sh`
+   当前原则：
+   - 不直接复用 Windows 全量 `conda env export`
+   - 服务器按 Linux 基础 conda 环境 + 单独 pip 安装来复现
 
 ## 自我验证清单
 

@@ -472,6 +472,15 @@
     - `DDP + online_v1`
     - `FSDP + online_v1`
     - `DDP + online_v2_sparse_sharded`
+- 服务器环境迁移文件已补齐：
+  - `env/model_current_from_history.yml`
+  - `env/model_server_environment.yml`
+  - `env/model_server_pip_requirements.txt`
+  - `scripts/install_model_env_server.sh`
+  - 当前结论：
+    - 不能直接把 Windows 全量 `conda env export` 原样拿去 Linux 服务器
+    - 现在已经改成“Linux 基础 conda 环境 + 单独 pip 依赖 + 可选 CPU 扩展构建”的迁移方式
+    - 当前本机 `transformers` 元数据与运行时导入版本不一致，服务器脚本默认按运行时版本 `5.4.0` 安装
 
 ## 备注
 
