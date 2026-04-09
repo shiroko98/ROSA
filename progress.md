@@ -40,6 +40,7 @@
 - [x] 规模化 P0: 预分词 + `memmap`/二进制数据集管线
 - [x] 规模化 P1: 文档级索引与按需切片
 - [x] 规模化 P1: 稀疏活跃项 `ValueStore` 训练 v1
+- [x] 规模化 P1: 本地行分片 `ValueStore` v1
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -416,6 +417,20 @@
     - snapshot interval 256：`rosa_addr ~21.08ms`，`step ~55.65ms`
     - test 指标保持一致：`loss 16.5346`，`token_acc 0.04419`
   - 说明这条路径已经能在不退回“整文档地址全缓存”的情况下，进一步减少 full-history 在线训练的同步地址成本
+- 稀疏 + 本地行分片 `ValueStore` v1 结论：
+  - 当前已支持在 `per_layer ValueStore` 上同时启用：
+    - 稀疏梯度训练
+    - 按词表行的本地分片
+  - 训练时会自动把：
+    - 普通参数交给 `AdamW`
+    - 稀疏 value table shard 交给 `SparseAdam`
+  - 当前输出已新增：
+    - `rosa_value_shards`
+    - `rosa_value_store_sharded`
+    - `rosa_active_value_shards`
+  - 当前定位仍是“单机本地分片 v1”：
+    - 已适合继续放大词表 / per-layer table 的单机实验
+    - 但还不是跨卡 all-to-all 或 host-memory 大表方案
 
 ## 备注
 

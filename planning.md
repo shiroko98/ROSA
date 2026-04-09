@@ -21,6 +21,7 @@
 - 当前新任务：开始落地“预分词 + `memmap`/二进制数据集管线”，目标是让 `doc_local + online_seq` 在不把全部 token/sample 常驻 Python list 的前提下直接训练
 - 当前进展：`memmap` 数据管线第一版已落地，当前已支持 manifest 构建、文档级二进制 token 存储、按需切片 dataset，以及 `train_qwen_llama_vs_rosa_v2.py --pretokenized_manifest ...` 直接训练
 - 当前进展：`per_layer ValueStore` 的稀疏活跃项训练第一版已落地，当前可通过 `--rosa_sparse_value_training` 或 `--rosa_recipe online_v2_sparse` 启用；训练期会把普通参数交给 `AdamW`，把 per-layer value table 交给 `SparseAdam`
+- 当前进展：本地行分片 `ValueStore` 第一版已落地，当前可通过 `--rosa_value_shards N` 或 `--rosa_recipe online_v2_sparse_sharded` 启用；每层 value table 可按词表行切成多个本地 shard，并输出当前 batch 的活跃分片统计
 - 对应路线图任务：
   - 把 ROSA 从离线/整段检索改成增量在线状态机
   - 抽象地址生成接口，解耦“匹配”和“取值”
@@ -202,9 +203,10 @@
 
 ## 下一任务
 
-1. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
-2. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
-3. 训练性能优化后续优先项：
+1. 规模化阶段继续推进 `ValueStore`，优先从“本地行分片”走向真正的跨卡 / host-memory 分片。
+2. 在线主线 P1 已收束，后续可按新 TODO 进入 P2 的 `ROSA-DocMemory`。
+3. 若继续做训练主线增强，优先把 `per-layer ValueStore` 作为在线训练默认实验对象之一。
+4. 训练性能优化后续优先项：
    - 地址支路 CPU worker 前移 / next-batch overlap（继续作为默认主线优化；当前 queue depth 可调，但默认先保持 `1`）
    - `online_sam` sequence 快路径进一步下沉到 CUDA/Triton（C++ CPU v1 已完成）
    - 状态快照进一步轻量化 / 磁盘化 / 更细粒度间隔（更偏 sync / 无 async / 大数据场景）

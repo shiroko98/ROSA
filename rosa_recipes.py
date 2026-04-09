@@ -14,6 +14,7 @@ class RosaRecipeSpec:
     seq_address_mode: str
     value_mode: str
     sparse_value_training: bool
+    value_shards: int
     context_gate: bool
     use_match_len_gate: bool
     inject_layers: int
@@ -32,6 +33,7 @@ ROSA_RECIPES: Dict[str, RosaRecipeSpec] = {
         seq_address_mode="online_sam",
         value_mode="shared",
         sparse_value_training=False,
+        value_shards=1,
         context_gate=True,
         use_match_len_gate=True,
         inject_layers=1,
@@ -48,6 +50,7 @@ ROSA_RECIPES: Dict[str, RosaRecipeSpec] = {
         seq_address_mode="online_sam",
         value_mode="per_layer",
         sparse_value_training=False,
+        value_shards=1,
         context_gate=True,
         use_match_len_gate=True,
         inject_layers=1,
@@ -64,6 +67,24 @@ ROSA_RECIPES: Dict[str, RosaRecipeSpec] = {
         seq_address_mode="online_sam",
         value_mode="per_layer",
         sparse_value_training=True,
+        value_shards=1,
+        context_gate=True,
+        use_match_len_gate=True,
+        inject_layers=1,
+        inject_layer_ids="0",
+        min_match_len=1,
+        scale=0.15,
+    ),
+    "online_v2_sparse_sharded": RosaRecipeSpec(
+        name="online_v2_sparse_sharded",
+        description="在线主线 V2SS：online_seq + online_sam + per-layer sparse value + local row sharding + 单早层 + context gate。",
+        train_mode="online_seq",
+        memory_mode="doc_local",
+        backend="sam",
+        seq_address_mode="online_sam",
+        value_mode="per_layer",
+        sparse_value_training=True,
+        value_shards=4,
         context_gate=True,
         use_match_len_gate=True,
         inject_layers=1,
@@ -90,6 +111,7 @@ def recipe_fields(spec: RosaRecipeSpec) -> Dict[str, Any]:
         "rosa_seq_address_mode": spec.seq_address_mode,
         "rosa_value_mode": spec.value_mode,
         "rosa_sparse_value_training": spec.sparse_value_training,
+        "rosa_value_shards": spec.value_shards,
         "rosa_context_gate": spec.context_gate,
         "rosa_disable_match_len_gate": not spec.use_match_len_gate,
         "rosa_inject_layers": spec.inject_layers,

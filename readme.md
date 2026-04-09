@@ -118,6 +118,23 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - 不是分片 `ValueStore` 的最终形态
   - 目前尚未做跨卡分片 / host memory / all-to-all
 
+## Sharded ValueStore
+
+- 开关：`--rosa_value_shards N`
+- 预设配方：`--rosa_recipe online_v2_sparse_sharded`
+- 当前作用：
+  - 仅对 `--rosa_value_mode per_layer` 生效
+  - 将每层 value table 按词表行切成多个本地 shard
+  - 每个地址会先映射到所属 shard，再到 shard 内部做 lookup
+- 当前输出统计：
+  - `rosa_value_shards`
+  - `rosa_value_store_sharded`
+  - `rosa_active_value_shards`
+- 当前定位：
+  - 这是“单机本地行分片 v1”
+  - 适合继续放大词表 / per-layer table 的单机训练实验
+  - 还不是跨卡 / host-memory / all-to-all 的最终规模化方案
+
 ## Context-Aware Gate
 
 - 开关：`--rosa_context_gate`
@@ -182,7 +199,7 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 ## Recipe / Preset
 
 - 配置模块：`rosa_recipes.py`
-- 开关：`--rosa_recipe custom|online_v1|online_v2`
+- 开关：`--rosa_recipe custom|online_v1|online_v2|online_v2_sparse|online_v2_sparse_sharded`
 - 当前推荐主线：`--rosa_recipe online_v1`
 - `online_v1` 会固定：
   - `--rosa_train_mode online_seq`
@@ -206,8 +223,15 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `--rosa_inject_layer_ids 0`
   - `--rosa_min_match_len 1`
   - `--rosa_scale 0.15`
+- `online_v2_sparse` 会在 `online_v2` 基础上额外固定：
+  - `--rosa_sparse_value_training`
+- `online_v2_sparse_sharded` 会在 `online_v2_sparse` 基础上额外固定：
+  - `--rosa_value_shards 4`
 - `online_v1` 当前默认仍走在线主线语义，不会自动启用训练地址缓存
 - `online_v2` 当前更适合作为“进阶实验 recipe”，用于验证 per-layer ValueStore 是否值得正式进入主线
+- `online_v2_sparse` / `online_v2_sparse_sharded` 当前更适合作为规模化实验入口：
+  - 前者验证稀疏活跃行训练
+  - 后者验证单机本地分片表存储
 - 典型 smoke：
 
 ```powershell

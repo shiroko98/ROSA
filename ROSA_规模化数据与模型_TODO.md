@@ -21,7 +21,7 @@
 | --- | --- | --- | --- | --- | --- |
 | 已完成 | P0 | 预分词 + `memmap`/二进制数据集管线 | 可复用的数据构建脚本、manifest、训练加载器 | 不再需要把全部 token/sample 常驻 Python list；`doc_local + online_seq` 可直接从预分词二进制数据训练 | 已新增构建脚本、manifest、训练入口 |
 | 已完成 | P1 | 文档级索引与按需切片 | 文档偏移、长度、chunk 索引按需读取 | dataset `__getitem__` 动态切片，不复制大块 token | `MemmapDocChunkDataset` 已落地 |
-| 进行中 | P1 | 稀疏 / 分片 `ValueStore` | 活跃项 gather + 可扩展表存储 | `per_layer` 不再线性吃完整词表乘层数的参数量 | 已完成 sparse active-row training v1，分片仍未开始 |
+| 进行中 | P1 | 稀疏 / 分片 `ValueStore` | 活跃项 gather + 可扩展表存储 | `per_layer` 不再线性吃完整词表乘层数的参数量 | 已完成 sparse active-row training v1 + 本地行分片 v1，跨卡分片仍未开始 |
 | 未开始 | P1 | 大模型训练基础设施 | activation checkpointing / 更稳 checkpoint / 梯度累积策略 | 大模型训练不中断、可恢复、显存可控 | 之后再接 FSDP/ZeRO |
 | 未开始 | P2 | 分布式训练 | FSDP/ZeRO 训练路径 | 单机多卡和更大模型训练可用 | 不与当前小实验入口耦死 |
 | 未开始 | P2 | 地址引擎 GPU/Triton/CUDA 实现 | `[B, T]` 训练 sequence addressing fused kernel | 训练期地址生成不再主要受 CPU 约束 | 优先 sequence 路径，不先改 decode step |
@@ -85,16 +85,19 @@
   - 稀疏梯度 `Embedding(sparse=True)`
   - `AdamW + SparseAdam` 双优化器训练
   - 当前 batch 活跃地址统计：`rosa_active_address_count / fraction`
+  - 本地按词表行分片的 `per_layer ValueStore`
+  - 当前 batch 活跃分片统计：`rosa_active_value_shards`
 - 当前 `ValueStore` 规模化路径尚未支持：
   - 跨卡 / 跨分片存储
   - 活跃项 all-to-all
   - 磁盘 / host memory 大表
+  - 按分片独立放置到不同 device / host 的真正分布式表
 
 ## 当前结论
 
 - 规模化阶段最先要解决的不是更多建模细节，而是数据与系统底座。
 - 当前的 `DocChunkDataset` 更适合中小规模实验，不适合大数据长期训练。
 - “预分词 + `memmap`/二进制数据集管线”第一版已经完成，下一优先级转向：
-  - 分片 `ValueStore`
+  - 分布式 / host-memory `ValueStore`
   - 大模型训练基础设施
   - 地址引擎 GPU/Triton/CUDA 实现

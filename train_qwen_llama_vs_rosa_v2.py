@@ -1385,6 +1385,7 @@ class RosaFusedLM(BaseLM):
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
         rosa_sparse_value_training: bool = False,
+        rosa_value_shards: int = 1,
         rosa_seq_address_mode: str = "reference_backend",
         rosa_online_sam_impl: str = "fast",
         use_context_gate: bool = False,
@@ -1410,6 +1411,7 @@ class RosaFusedLM(BaseLM):
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
         self.rosa_sparse_value_training = bool(rosa_sparse_value_training and rosa_value_mode == "per_layer")
+        self.rosa_value_shards = max(1, int(rosa_value_shards))
         self.rosa_seq_address_mode = rosa_seq_address_mode
         self.rosa_online_sam_impl = rosa_online_sam_impl
         self.use_context_gate = use_context_gate
@@ -1432,6 +1434,7 @@ class RosaFusedLM(BaseLM):
             inject_layers=self.inject_layers,
             mode=rosa_value_mode,
             sparse_training=self.rosa_sparse_value_training,
+            num_shards=self.rosa_value_shards,
         )
         self.rosa_value_store.copy_shared_weights_(self.embed_tokens)
         self.rosa_hot_cache = (
@@ -1608,6 +1611,8 @@ class RosaFusedLM(BaseLM):
                 cache_rows.append(cache_stats)
         payload_stats: Dict[str, float] = {
             "rosa_sparse_value_training": 1.0 if self.rosa_value_store.uses_sparse_training else 0.0,
+            "rosa_value_shards": float(self.rosa_value_store.num_shards),
+            "rosa_value_store_sharded": 1.0 if self.rosa_value_store.is_sharded else 0.0,
         }
         if batch.valid_mask.any():
             active_addr_ids = batch.addr_ids.masked_select(batch.valid_mask)
@@ -1619,6 +1624,10 @@ class RosaFusedLM(BaseLM):
                         "rosa_active_address_fraction": float(active_unique.numel()) / max(1, self.rosa_value_store.vocab_size),
                     }
                 )
+        if self.rosa_value_store.is_sharded:
+            payload_stats["rosa_active_value_shards"] = float(
+                self.rosa_value_store.active_shard_count(batch.addr_ids, batch.valid_mask)
+            )
         if cache_rows:
             token_requests = sum(row.get("token_requests", 0.0) for row in cache_rows)
             token_hits = sum(row.get("token_hits", 0.0) for row in cache_rows)
@@ -2340,6 +2349,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
     parser.add_argument("--rosa_sparse_value_training", action="store_true",
                         help="仅对 per_layer ValueStore 生效；启用稀疏梯度与 SparseAdam，只更新当前 batch 命中的地址行。")
+    parser.add_argument("--rosa_value_shards", type=int, default=1,
+                        help="仅对 per_layer ValueStore 生效；按词表行把每层 value table 切成多少个本地 shard。1 表示不分片。")
     parser.add_argument("--rosa_seq_address_mode", type=str, default="online_exact",
                         choices=["reference_backend", "online_exact", "online_sam"],
                         help="reference_backend 使用现有整段 reference 地址逻辑；online_exact 使用 exact-list 在线扫描；online_sam 使用真正的在线 suffix automaton state。")
@@ -2525,6 +2536,7 @@ def main():
     print(f"ROSA recipe: {recipe_meta['name']}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
     print(f"ROSA sparse value training: {args.rosa_sparse_value_training}")
+    print(f"ROSA value shards: {args.rosa_value_shards}")
     print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
     print(f"ROSA online sam impl: {args.rosa_online_sam_impl}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
@@ -2578,6 +2590,7 @@ def main():
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         rosa_sparse_value_training=args.rosa_sparse_value_training,
+        rosa_value_shards=args.rosa_value_shards,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
@@ -2636,6 +2649,7 @@ def main():
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
         rosa_sparse_value_training=args.rosa_sparse_value_training,
+        rosa_value_shards=args.rosa_value_shards,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
@@ -2705,6 +2719,7 @@ def main():
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
             "sparse_value_training": args.rosa_sparse_value_training,
+            "value_shards": args.rosa_value_shards,
             "seq_address_mode": args.rosa_seq_address_mode,
             "online_sam_impl": args.rosa_online_sam_impl,
             "train_address_async": (args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),
