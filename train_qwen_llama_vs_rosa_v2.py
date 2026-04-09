@@ -38,6 +38,7 @@ from rosa_addressing import (
     sam_rosa_predict,
 )
 from rosa_memmap_dataset import build_memmap_chunk_datasets_from_manifest, load_pretokenized_memmap_manifest
+from rosa_optim import build_training_optimizers
 from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 from rosa_session import RosaBatchSession
@@ -45,6 +46,7 @@ from rosa_timing import TimingCollector
 from rosa_train_async import maybe_wrap_train_address_prefetch, read_async_prefetch_batch_stats
 from rosa_training_cache import build_sequence_online_precomputed_rosa
 from rosa_training_snapshot import build_sequence_online_state_snapshots
+from rosa_value_store import RosaValueStore
 
 try:
     from transformers import AutoTokenizer
@@ -1218,86 +1220,6 @@ def _pad_filtered_mem(mem_row: List[int], pad_id: int) -> List[int]:
     return [x for x in mem_row if x != pad_id]
 
 
-class RosaValueStore(nn.Module):
-    """ROSA value lookup 抽象层：shared embedding 或 per-layer value table。"""
-
-    def __init__(
-        self,
-        *,
-        vocab_size: int,
-        dim: int,
-        inject_layers: int,
-        mode: str = "shared",
-    ):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.dim = dim
-        self.inject_layers = inject_layers
-        self.mode = mode
-
-        if mode == "shared":
-            self.per_layer_tables = None
-        elif mode == "per_layer":
-            self.per_layer_tables = nn.ModuleList(
-                [nn.Embedding(vocab_size, dim) for _ in range(max(0, inject_layers))]
-            )
-        else:
-            raise ValueError(f"未知 rosa_value_mode: {mode}")
-
-    @property
-    def is_per_layer(self) -> bool:
-        return self.mode == "per_layer"
-
-    def copy_shared_weights_(self, shared_embedding: nn.Embedding) -> None:
-        if not self.is_per_layer or self.per_layer_tables is None:
-            return
-        with torch.no_grad():
-            for table in self.per_layer_tables:
-                table.weight.copy_(shared_embedding.weight)
-
-    def lookup(
-        self,
-        layer_idx: int,
-        addr_ids: torch.Tensor,
-        *,
-        shared_embedding: nn.Embedding,
-    ) -> torch.Tensor:
-        addr_ids_safe = addr_ids.clamp_min(0)
-        if not self.is_per_layer:
-            return shared_embedding(addr_ids_safe)
-        if self.per_layer_tables is None or layer_idx >= len(self.per_layer_tables):
-            raise IndexError(f"layer_idx={layer_idx} 超出 RosaValueStore 可用层数。")
-        return self.per_layer_tables[layer_idx](addr_ids_safe)
-
-    def lookup_with_hot_cache(
-        self,
-        layer_idx: int,
-        addr_ids: torch.Tensor,
-        *,
-        valid_mask: Optional[torch.Tensor],
-        shared_embedding: nn.Embedding,
-        hot_cache: Optional[RosaHotAddressCache],
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        addr_ids_safe = addr_ids.clamp_min(0)
-
-        def fetch_fn(ids: torch.Tensor) -> torch.Tensor:
-            if not self.is_per_layer:
-                return shared_embedding(ids)
-            if self.per_layer_tables is None or layer_idx >= len(self.per_layer_tables):
-                raise IndexError(f"layer_idx={layer_idx} 超出 RosaValueStore 可用层数。")
-            return self.per_layer_tables[layer_idx](ids)
-
-        if hot_cache is None:
-            return fetch_fn(addr_ids_safe), {}
-        return hot_cache.lookup(
-            layer_idx,
-            addr_ids_safe,
-            valid_mask=valid_mask,
-            value_dim=self.dim,
-            fetch_fn=fetch_fn,
-        )
-
-
 def init_identity_linear_(proj: nn.Linear) -> None:
     if proj.weight.shape[0] != proj.weight.shape[1]:
         raise ValueError("仅支持方阵线性层做 identity 初始化。")
@@ -1462,6 +1384,7 @@ class RosaFusedLM(BaseLM):
         inject_layer_ids: Optional[Sequence[int]] = None,
         rosa_scale: float = 0.25,
         rosa_value_mode: str = "shared",
+        rosa_sparse_value_training: bool = False,
         rosa_seq_address_mode: str = "reference_backend",
         rosa_online_sam_impl: str = "fast",
         use_context_gate: bool = False,
@@ -1486,6 +1409,7 @@ class RosaFusedLM(BaseLM):
         self.inject_layers = len(self.inject_layer_ids)
         self.rosa_scale = rosa_scale
         self.rosa_value_mode = rosa_value_mode
+        self.rosa_sparse_value_training = bool(rosa_sparse_value_training and rosa_value_mode == "per_layer")
         self.rosa_seq_address_mode = rosa_seq_address_mode
         self.rosa_online_sam_impl = rosa_online_sam_impl
         self.use_context_gate = use_context_gate
@@ -1507,6 +1431,7 @@ class RosaFusedLM(BaseLM):
             dim=cfg.dim,
             inject_layers=self.inject_layers,
             mode=rosa_value_mode,
+            sparse_training=self.rosa_sparse_value_training,
         )
         self.rosa_value_store.copy_shared_weights_(self.embed_tokens)
         self.rosa_hot_cache = (
@@ -1681,7 +1606,19 @@ class RosaFusedLM(BaseLM):
             layer_values.append(values)
             if cache_stats:
                 cache_rows.append(cache_stats)
-        payload_stats: Dict[str, float] = {}
+        payload_stats: Dict[str, float] = {
+            "rosa_sparse_value_training": 1.0 if self.rosa_value_store.uses_sparse_training else 0.0,
+        }
+        if batch.valid_mask.any():
+            active_addr_ids = batch.addr_ids.masked_select(batch.valid_mask)
+            if active_addr_ids.numel() > 0:
+                active_unique = torch.unique(active_addr_ids)
+                payload_stats.update(
+                    {
+                        "rosa_active_address_count": float(active_unique.numel()),
+                        "rosa_active_address_fraction": float(active_unique.numel()) / max(1, self.rosa_value_store.vocab_size),
+                    }
+                )
         if cache_rows:
             token_requests = sum(row.get("token_requests", 0.0) for row in cache_rows)
             token_hits = sum(row.get("token_hits", 0.0) for row in cache_rows)
@@ -2120,7 +2057,12 @@ def train_one_model(
     collect_timing: bool = False,
 ) -> Dict[str, List[Dict[str, float]]]:
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=(0.9, 0.95))
+    optimizer_bundle = build_training_optimizers(
+        model,
+        lr=lr,
+        weight_decay=weight_decay,
+        betas=(0.9, 0.95),
+    )
     amp_enabled = use_bf16 and device.type == "cuda"
 
     history = {"train": [], "val": []}
@@ -2150,7 +2092,7 @@ def train_one_model(
             y = labels_with_ignore(batch["labels"].to(device), pad_id)
 
             with step_timer.section("optim_zero_grad"):
-                optimizer.zero_grad(set_to_none=True)
+                optimizer_bundle.zero_grad(set_to_none=True)
             model_timer = TimingCollector(enabled=collect_timing, device=device)
             if amp_enabled:
                 with step_timer.section("forward"):
@@ -2188,8 +2130,8 @@ def train_one_model(
                 loss.backward()
             with step_timer.section("optim_step"):
                 if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
+                    optimizer_bundle.clip_grad_norm_(grad_clip)
+                optimizer_bundle.step()
 
             mask = y.ne(-100)
             num = mask.sum().item()
@@ -2208,6 +2150,7 @@ def train_one_model(
                 row = {}
                 row.update(step_timer.export_ms())
                 row.update(model_timer.export_ms())
+                row.update(optimizer_bundle.stats())
                 if async_prefetch_stats:
                     row["timing_async_prefetch_depth"] = async_prefetch_stats.get("rosa_async_prefetch_depth", 0.0)
                     row["timing_async_prefetch_inflight"] = async_prefetch_stats.get("rosa_async_prefetch_inflight", 0.0)
@@ -2234,6 +2177,7 @@ def train_one_model(
         if rosa_steps > 0:
             for k, v in rosa_stats_sum.items():
                 train_metrics[k] = v / rosa_steps
+        train_metrics.update(optimizer_bundle.stats())
         if collect_timing and timing_rows:
             train_metrics.update(average_prefixed_metric(timing_rows, "timing_"))
 
@@ -2394,6 +2338,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rosa_scale", type=float, default=0.25)
     parser.add_argument("--rosa_value_mode", type=str, default="shared", choices=["shared", "per_layer"],
                         help="shared 复用词嵌入；per_layer 为每个注入层使用独立 value table。")
+    parser.add_argument("--rosa_sparse_value_training", action="store_true",
+                        help="仅对 per_layer ValueStore 生效；启用稀疏梯度与 SparseAdam，只更新当前 batch 命中的地址行。")
     parser.add_argument("--rosa_seq_address_mode", type=str, default="online_exact",
                         choices=["reference_backend", "online_exact", "online_sam"],
                         help="reference_backend 使用现有整段 reference 地址逻辑；online_exact 使用 exact-list 在线扫描；online_sam 使用真正的在线 suffix automaton state。")
@@ -2578,6 +2524,7 @@ def main():
     print(f"ROSA train mode: {args.rosa_train_mode}")
     print(f"ROSA recipe: {recipe_meta['name']}")
     print(f"ROSA value mode: {args.rosa_value_mode}")
+    print(f"ROSA sparse value training: {args.rosa_sparse_value_training}")
     print(f"ROSA seq address mode: {args.rosa_seq_address_mode}")
     print(f"ROSA online sam impl: {args.rosa_online_sam_impl}")
     print(f"ROSA context gate: {args.rosa_context_gate}")
@@ -2630,6 +2577,7 @@ def main():
         inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        rosa_sparse_value_training=args.rosa_sparse_value_training,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
@@ -2687,6 +2635,7 @@ def main():
         inject_layer_ids=parse_int_csv_arg(args.rosa_inject_layer_ids),
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        rosa_sparse_value_training=args.rosa_sparse_value_training,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,
@@ -2755,6 +2704,7 @@ def main():
             "inject_layer_ids": parse_int_csv_arg(args.rosa_inject_layer_ids),
             "scale": args.rosa_scale,
             "value_mode": args.rosa_value_mode,
+            "sparse_value_training": args.rosa_sparse_value_training,
             "seq_address_mode": args.rosa_seq_address_mode,
             "online_sam_impl": args.rosa_online_sam_impl,
             "train_address_async": (args.rosa_train_mode == "online_seq" and not args.disable_rosa_train_address_async),

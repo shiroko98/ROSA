@@ -13,6 +13,7 @@ class RosaRecipeSpec:
     backend: str
     seq_address_mode: str
     value_mode: str
+    sparse_value_training: bool
     context_gate: bool
     use_match_len_gate: bool
     inject_layers: int
@@ -30,6 +31,7 @@ ROSA_RECIPES: Dict[str, RosaRecipeSpec] = {
         backend="sam",
         seq_address_mode="online_sam",
         value_mode="shared",
+        sparse_value_training=False,
         context_gate=True,
         use_match_len_gate=True,
         inject_layers=1,
@@ -45,6 +47,23 @@ ROSA_RECIPES: Dict[str, RosaRecipeSpec] = {
         backend="sam",
         seq_address_mode="online_sam",
         value_mode="per_layer",
+        sparse_value_training=False,
+        context_gate=True,
+        use_match_len_gate=True,
+        inject_layers=1,
+        inject_layer_ids="0",
+        min_match_len=1,
+        scale=0.15,
+    ),
+    "online_v2_sparse": RosaRecipeSpec(
+        name="online_v2_sparse",
+        description="在线主线 V2S：online_seq + online_sam + per-layer value + sparse value training + 单早层 + context gate。",
+        train_mode="online_seq",
+        memory_mode="doc_local",
+        backend="sam",
+        seq_address_mode="online_sam",
+        value_mode="per_layer",
+        sparse_value_training=True,
         context_gate=True,
         use_match_len_gate=True,
         inject_layers=1,
@@ -70,6 +89,7 @@ def recipe_fields(spec: RosaRecipeSpec) -> Dict[str, Any]:
         "rosa_backend": spec.backend,
         "rosa_seq_address_mode": spec.seq_address_mode,
         "rosa_value_mode": spec.value_mode,
+        "rosa_sparse_value_training": spec.sparse_value_training,
         "rosa_context_gate": spec.context_gate,
         "rosa_disable_match_len_gate": not spec.use_match_len_gate,
         "rosa_inject_layers": spec.inject_layers,

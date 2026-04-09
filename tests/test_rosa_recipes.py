@@ -58,6 +58,27 @@ class RosaRecipeTests(unittest.TestCase):
         self.assertEqual(args.rosa_inject_layer_ids, "0")
         self.assertEqual(args.rosa_min_match_len, 1)
         self.assertAlmostEqual(args.rosa_scale, 0.15)
+        self.assertFalse(args.rosa_sparse_value_training)
+
+    def test_online_v2_sparse_recipe_applies_expected_defaults(self):
+        parser = rosa_mod.build_arg_parser()
+        args = parser.parse_args(
+            [
+                "--data_path",
+                "data/rosa_demo.txt",
+                "--rosa_recipe",
+                "online_v2_sparse",
+            ]
+        )
+
+        recipe_meta = rosa_mod.apply_rosa_recipe(args)
+
+        self.assertTrue(recipe_meta["applied"])
+        self.assertEqual(args.rosa_recipe, "online_v2_sparse")
+        self.assertEqual(args.rosa_value_mode, "per_layer")
+        self.assertTrue(args.rosa_sparse_value_training)
+        self.assertEqual(args.rosa_seq_address_mode, "online_sam")
+        self.assertEqual(args.rosa_inject_layer_ids, "0")
 
     def test_custom_recipe_keeps_existing_values(self):
         parser = rosa_mod.build_arg_parser()
@@ -97,6 +118,7 @@ class RosaRecipeTests(unittest.TestCase):
         self.assertIn("custom", names)
         self.assertIn("online_v1", names)
         self.assertIn("online_v2", names)
+        self.assertIn("online_v2_sparse", names)
 
 
 if __name__ == "__main__":

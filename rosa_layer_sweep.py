@@ -230,6 +230,7 @@ def build_rosa_model(args, tokenizer, layer_ids: Sequence[int]) -> rosa_mod.Rosa
         inject_layer_ids=layer_ids,
         rosa_scale=args.rosa_scale,
         rosa_value_mode=args.rosa_value_mode,
+        rosa_sparse_value_training=args.rosa_sparse_value_training,
         rosa_seq_address_mode=args.rosa_seq_address_mode,
         rosa_online_sam_impl=args.rosa_online_sam_impl,
         use_context_gate=args.rosa_context_gate,

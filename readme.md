@@ -99,6 +99,25 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
 - `per_layer`：每个注入层使用独立 value table
 - 当前初始化策略：`per_layer` value table 从共享词嵌入复制初值，方便和旧路径做平滑对比
 
+## Sparse ValueStore Training
+
+- 开关：`--rosa_sparse_value_training`
+- 预设配方：`--rosa_recipe online_v2_sparse`
+- 当前作用：
+  - 仅对 `--rosa_value_mode per_layer` 生效
+  - 将 per-layer value table 切成稀疏梯度 `Embedding(sparse=True)`
+  - 训练时自动拆成：
+    - 普通参数 -> `AdamW`
+    - per-layer value table -> `SparseAdam`
+- 当前输出统计：
+  - `rosa_sparse_value_training`
+  - `rosa_active_address_count`
+  - `rosa_active_address_fraction`
+- 当前定位：
+  - 主要为大词表 / 大模型下的 optimizer state 和活跃行训练做准备
+  - 不是分片 `ValueStore` 的最终形态
+  - 目前尚未做跨卡分片 / host memory / all-to-all
+
 ## Context-Aware Gate
 
 - 开关：`--rosa_context_gate`

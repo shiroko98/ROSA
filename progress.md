@@ -39,6 +39,7 @@
 - [x] 建立“规模化数据与模型”独立 TODO
 - [x] 规模化 P0: 预分词 + `memmap`/二进制数据集管线
 - [x] 规模化 P1: 文档级索引与按需切片
+- [x] 规模化 P1: 稀疏活跃项 `ValueStore` 训练 v1
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -271,6 +272,22 @@
     - `build_rosa_memmap_dataset.py --data_path data/rosa_demo.txt ...`
     - `train_qwen_llama_vs_rosa_v2.py --pretokenized_manifest outputs/memmap_smoke_dataset/dataset_manifest.json ...`
     - 已确认 manifest 构建和训练主入口均可跑通
+- 当前稀疏活跃项 `ValueStore` 训练第一版已新增：
+  - `rosa_value_store.py`
+  - `rosa_optim.py`
+  - `--rosa_sparse_value_training`
+  - `--rosa_recipe online_v2_sparse`
+- 当前能力：
+  - `per_layer ValueStore` 可切到稀疏梯度 `Embedding(sparse=True)`
+  - 训练时自动拆成 `AdamW + SparseAdam` 双优化器
+  - 运行时输出：
+    - `rosa_sparse_value_training`
+    - `rosa_active_address_count`
+    - `rosa_active_address_fraction`
+- 当前自检结果：
+  - `tests/test_rosa_sparse_value_training.py` 通过
+  - 全量 `86` 个测试通过
+  - CLI smoke：`train_qwen_llama_vs_rosa_v2.py --rosa_recipe online_v2_sparse ...` 已跑通
 
 ## 自我验证记录
 
