@@ -37,7 +37,8 @@
 - [x] 在线主线 P2: 训练地址异步预取 v2（可配置预取深度 + 更细 timing）
 - [x] 在线主线 P2: `online_sam` 编译型 CPU sequence 实现 v1
 - [x] 建立“规模化数据与模型”独立 TODO
-- [ ] 规模化 P0: 预分词 + `memmap`/二进制数据集管线
+- [x] 规模化 P0: 预分词 + `memmap`/二进制数据集管线
+- [x] 规模化 P1: 文档级索引与按需切片
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -253,6 +254,23 @@
   - 当前结论：
     - 编译型 CPU 版已经把 sequence 地址层成本进一步压低
     - 后台地址准备时间也明显缩短，端到端训练 step 有小幅正向收益
+- 当前规模化数据管线第一版已新增：
+  - `build_rosa_memmap_dataset.py`
+  - `rosa_memmap_dataset.py`
+  - `--pretokenized_manifest`
+- 当前 `memmap` 路径已支持：
+  - 文档级 `tokens.bin + offsets.npy + lengths.npy + dataset_manifest.json`
+  - `MemmapDocChunkDataset` 按需切片，不再预展平 sample dict
+  - `doc_local + online_seq`
+  - `global_train + online_seq`
+  - 训练主脚本直接从 manifest 训练
+- 当前自检结果：
+  - `tests/test_rosa_memmap_dataset.py` 通过
+  - `python -m unittest discover -s tests` 当前共 `82` 个测试通过
+  - 小型 CLI smoke：
+    - `build_rosa_memmap_dataset.py --data_path data/rosa_demo.txt ...`
+    - `train_qwen_llama_vs_rosa_v2.py --pretokenized_manifest outputs/memmap_smoke_dataset/dataset_manifest.json ...`
+    - 已确认 manifest 构建和训练主入口均可跑通
 
 ## 自我验证记录
 

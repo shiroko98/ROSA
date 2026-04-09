@@ -37,6 +37,7 @@ from rosa_addressing import (
     sam_rosa_address_meta_with_memory,
     sam_rosa_predict,
 )
+from rosa_memmap_dataset import build_memmap_chunk_datasets_from_manifest, load_pretokenized_memmap_manifest
 from rosa_recipes import apply_rosa_recipe, available_rosa_recipe_names
 from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPayload, RosaPrefetcher
 from rosa_session import RosaBatchSession
@@ -2324,6 +2325,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="显式测试集路径，可为文件、目录或通配符。")
     parser.add_argument("--tokenizer_name_or_path", type=str, default=None,
                         help="HF tokenizer 路径或名称。为空时使用 byte fallback，仅用于烟雾测试。")
+    parser.add_argument("--pretokenized_manifest", type=str, default=None,
+                        help="预分词 memmap/二进制数据集 manifest。提供后将直接从二进制 token 文档库训练，不再从原始文本重新 tokenize。")
     parser.add_argument("--split_mode", type=str, default="paragraph", choices=["paragraph", "line", "stream"])
     parser.add_argument("--data_format", type=str, default="auto", choices=["auto", "text", "jsonl", "json"],
                         help="auto 会按扩展名自动识别；json/jsonl 默认每条记录视为一个文档。")
@@ -2417,66 +2420,158 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     set_seed(args.seed)
 
-    tokenizer = build_tokenizer(args.tokenizer_name_or_path)
+    pretokenized_manifest = None
+    effective_tokenizer_name_or_path = args.tokenizer_name_or_path
+    if args.pretokenized_manifest:
+        if any([args.data_path, args.train_data_path, args.val_data_path, args.test_data_path]):
+            raise ValueError("使用 --pretokenized_manifest 时，不应再同时提供原始数据路径参数。")
+        pretokenized_manifest = load_pretokenized_memmap_manifest(args.pretokenized_manifest)
+        manifest_tokenizer_name = pretokenized_manifest.get("tokenizer", {}).get("name_or_path")
+        if (
+            effective_tokenizer_name_or_path
+            and manifest_tokenizer_name
+            and manifest_tokenizer_name not in {"byte-fallback", effective_tokenizer_name_or_path}
+        ):
+            raise ValueError(
+                f"预分词数据集使用 tokenizer={manifest_tokenizer_name}，但当前传入 --tokenizer_name_or_path={effective_tokenizer_name_or_path}。"
+            )
+        if not effective_tokenizer_name_or_path and manifest_tokenizer_name and manifest_tokenizer_name != "byte-fallback":
+            effective_tokenizer_name_or_path = manifest_tokenizer_name
+
+    tokenizer = build_tokenizer(effective_tokenizer_name_or_path)
     json_text_keys = parse_csv_arg(args.json_text_keys)
     if not json_text_keys:
         raise ValueError("--json_text_keys 不能为空。")
 
-    explicit_split_mode = any([args.train_data_path, args.val_data_path, args.test_data_path])
-    if explicit_split_mode:
-        if not all([args.train_data_path, args.val_data_path, args.test_data_path]):
-            raise ValueError("使用显式数据集切分时，--train_data_path/--val_data_path/--test_data_path 必须同时提供。")
-        train_docs, train_source = load_docs_from_path(
-            args.train_data_path,
-            data_format=args.data_format,
-            split_mode=args.split_mode,
-            json_text_keys=json_text_keys,
-            max_docs=args.max_train_docs,
+    train_docs: List[str] = []
+    val_docs: List[str] = []
+    test_docs: List[str] = []
+    dataset_meta: Dict[str, Any]
+
+    if pretokenized_manifest is not None:
+        train_ds, val_ds, test_ds, memory_meta, dataset_meta = build_memmap_chunk_datasets_from_manifest(
+            args.pretokenized_manifest,
+            seq_len=args.seq_len,
+            pad_id=tokenizer.pad_token_id,
+            stride=args.stride,
+            rosa_memory_tokens=args.rosa_memory_tokens,
+            rosa_memory_mode=args.rosa_memory_mode,
+            rosa_global_memory_tokens=args.rosa_global_memory_tokens,
+            rosa_train_mode=args.rosa_train_mode,
+            enable_train_address_cache=(args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
+            enable_train_state_snapshot=(args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot),
         )
-        val_docs, val_source = load_docs_from_path(
-            args.val_data_path,
-            data_format=args.data_format,
-            split_mode=args.split_mode,
-            json_text_keys=json_text_keys,
-            max_docs=args.max_val_docs,
-        )
-        test_docs, test_source = load_docs_from_path(
-            args.test_data_path,
-            data_format=args.data_format,
-            split_mode=args.split_mode,
-            json_text_keys=json_text_keys,
-            max_docs=args.max_test_docs,
-        )
-        dataset_source = {
-            "mode": "explicit_splits",
-            "train": train_source,
-            "val": val_source,
-            "test": test_source,
-        }
-        total_docs = len(train_docs) + len(val_docs) + len(test_docs)
+        dataset_source = dataset_meta["source"]
+        train_doc_count = int(dataset_meta["train_docs"])
+        val_doc_count = int(dataset_meta["val_docs"])
+        test_doc_count = int(dataset_meta["test_docs"])
+        total_docs = train_doc_count + val_doc_count + test_doc_count
+        train_preview = dataset_meta.get("train_preview_text") or "<pretokenized>"
+        data_format_label = "pretokenized_memmap"
     else:
-        if not args.data_path:
-            raise ValueError("未提供数据路径。请传 --data_path，或同时传 --train_data_path/--val_data_path/--test_data_path。")
-        docs, source_meta = load_docs_from_path(
-            args.data_path,
-            data_format=args.data_format,
-            split_mode=args.split_mode,
-            json_text_keys=json_text_keys,
-            max_docs=args.max_docs,
+        explicit_split_mode = any([args.train_data_path, args.val_data_path, args.test_data_path])
+        if explicit_split_mode:
+            if not all([args.train_data_path, args.val_data_path, args.test_data_path]):
+                raise ValueError("使用显式数据集切分时，--train_data_path/--val_data_path/--test_data_path 必须同时提供。")
+            train_docs, train_source = load_docs_from_path(
+                args.train_data_path,
+                data_format=args.data_format,
+                split_mode=args.split_mode,
+                json_text_keys=json_text_keys,
+                max_docs=args.max_train_docs,
+            )
+            val_docs, val_source = load_docs_from_path(
+                args.val_data_path,
+                data_format=args.data_format,
+                split_mode=args.split_mode,
+                json_text_keys=json_text_keys,
+                max_docs=args.max_val_docs,
+            )
+            test_docs, test_source = load_docs_from_path(
+                args.test_data_path,
+                data_format=args.data_format,
+                split_mode=args.split_mode,
+                json_text_keys=json_text_keys,
+                max_docs=args.max_test_docs,
+            )
+            dataset_source = {
+                "mode": "explicit_splits",
+                "train": train_source,
+                "val": val_source,
+                "test": test_source,
+            }
+            total_docs = len(train_docs) + len(val_docs) + len(test_docs)
+        else:
+            if not args.data_path:
+                raise ValueError("未提供数据路径。请传 --data_path，或同时传 --train_data_path/--val_data_path/--test_data_path。")
+            docs, source_meta = load_docs_from_path(
+                args.data_path,
+                data_format=args.data_format,
+                split_mode=args.split_mode,
+                json_text_keys=json_text_keys,
+                max_docs=args.max_docs,
+            )
+            train_docs, val_docs, test_docs = train_val_test_split(docs, args.train_ratio, args.val_ratio, args.seed)
+            dataset_source = {
+                "mode": "single_source",
+                "source": source_meta,
+            }
+            total_docs = len(docs)
+
+        train_doc_count = len(train_docs)
+        val_doc_count = len(val_docs)
+        test_doc_count = len(test_docs)
+        train_preview = preview_doc(train_docs[0]) if train_docs else "<empty>"
+        data_format_label = args.data_format
+
+        train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
+        val_tok = tokenize_docs(val_docs, tokenizer, add_bos=True, add_eos=True)
+        test_tok = tokenize_docs(test_docs, tokenizer, add_bos=True, add_eos=True)
+
+        train_ds, val_ds, test_ds, memory_meta = build_chunk_datasets(
+            train_tok,
+            val_tok,
+            test_tok,
+            seq_len=args.seq_len,
+            pad_id=tokenizer.pad_token_id,
+            stride=args.stride,
+            rosa_memory_tokens=args.rosa_memory_tokens,
+            rosa_memory_mode=args.rosa_memory_mode,
+            rosa_global_memory_tokens=args.rosa_global_memory_tokens,
+            rosa_backend=args.rosa_backend,
+            rosa_train_mode=args.rosa_train_mode,
+            rosa_seq_address_mode=args.rosa_seq_address_mode,
+            rosa_online_sam_impl=args.rosa_online_sam_impl,
+            rosa_min_match_len=args.rosa_min_match_len,
+            special_ids=tokenizer.special_ids,
+            forbid_special_target=not args.rosa_allow_special_target,
+            enable_train_address_cache=(args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
+            enable_train_state_snapshot=(args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot),
+            train_state_snapshot_interval=args.rosa_train_state_snapshot_interval,
         )
-        train_docs, val_docs, test_docs = train_val_test_split(docs, args.train_ratio, args.val_ratio, args.seed)
-        dataset_source = {
-            "mode": "single_source",
-            "source": source_meta,
+        dataset_meta = {
+            "source": dataset_source,
+            "train_docs": train_doc_count,
+            "val_docs": val_doc_count,
+            "test_docs": test_doc_count,
+            "train_preview_text": train_preview,
+            "tokenization": {
+                "add_bos": True,
+                "add_eos": True,
+            },
+            "tokenizer": {
+                "name_or_path": effective_tokenizer_name_or_path or "byte-fallback",
+            },
         }
-        total_docs = len(docs)
 
     print(f"总文档数: {total_docs}")
-    print(f"train/val/test: {len(train_docs)} / {len(val_docs)} / {len(test_docs)}")
+    print(f"train/val/test: {train_doc_count} / {val_doc_count} / {test_doc_count}")
     print(f"架构风格: {args.arch_style}")
-    print(f"tokenizer: {args.tokenizer_name_or_path or 'byte-fallback'}")
-    print(f"data format: {args.data_format}")
+    print(f"tokenizer: {effective_tokenizer_name_or_path or 'byte-fallback'}")
+    print(f"data format: {data_format_label}")
     print(f"json text keys: {json_text_keys}")
+    if args.pretokenized_manifest:
+        print(f"pretokenized manifest: {args.pretokenized_manifest}")
     print(f"ROSA 最小匹配长度阈值: {args.rosa_min_match_len}")
     print(f"ROSA backend: {args.rosa_backend}")
     print(f"ROSA memory mode: {args.rosa_memory_mode}")
@@ -2496,33 +2591,7 @@ def main():
     print(f"ROSA inject layer ids: {parse_int_csv_arg(args.rosa_inject_layer_ids) or list(range(args.rosa_inject_layers))}")
     if recipe_meta["applied"]:
         print(f"ROSA recipe detail: {recipe_meta['description']}")
-    print(f"示例 train doc: {preview_doc(train_docs[0]) if train_docs else '<empty>'}")
-
-    train_tok = tokenize_docs(train_docs, tokenizer, add_bos=True, add_eos=True)
-    val_tok = tokenize_docs(val_docs, tokenizer, add_bos=True, add_eos=True)
-    test_tok = tokenize_docs(test_docs, tokenizer, add_bos=True, add_eos=True)
-
-    train_ds, val_ds, test_ds, memory_meta = build_chunk_datasets(
-        train_tok,
-        val_tok,
-        test_tok,
-        seq_len=args.seq_len,
-        pad_id=tokenizer.pad_token_id,
-        stride=args.stride,
-        rosa_memory_tokens=args.rosa_memory_tokens,
-        rosa_memory_mode=args.rosa_memory_mode,
-        rosa_global_memory_tokens=args.rosa_global_memory_tokens,
-        rosa_backend=args.rosa_backend,
-        rosa_train_mode=args.rosa_train_mode,
-        rosa_seq_address_mode=args.rosa_seq_address_mode,
-        rosa_online_sam_impl=args.rosa_online_sam_impl,
-        rosa_min_match_len=args.rosa_min_match_len,
-        special_ids=tokenizer.special_ids,
-        forbid_special_target=not args.rosa_allow_special_target,
-        enable_train_address_cache=(args.enable_rosa_train_address_cache and not args.disable_rosa_train_address_cache),
-        enable_train_state_snapshot=(args.enable_rosa_train_state_snapshot and not args.disable_rosa_train_state_snapshot),
-        train_state_snapshot_interval=args.rosa_train_state_snapshot_interval,
-    )
+    print(f"示例 train doc: {train_preview}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
@@ -2666,7 +2735,7 @@ def main():
         "args": vars(args),
         "model_config": asdict(cfg),
         "tokenizer": {
-            "name_or_path": args.tokenizer_name_or_path or "byte-fallback",
+            "name_or_path": effective_tokenizer_name_or_path or "byte-fallback",
             "vocab_size": tokenizer.vocab_size,
             "pad_token_id": tokenizer.pad_token_id,
             "bos_token_id": tokenizer.bos_token_id,
@@ -2701,9 +2770,9 @@ def main():
         "dataset": {
             "source": dataset_source,
             "memory": memory_meta,
-            "train_docs": len(train_docs),
-            "val_docs": len(val_docs),
-            "test_docs": len(test_docs),
+            "train_docs": train_doc_count,
+            "val_docs": val_doc_count,
+            "test_docs": test_doc_count,
             "train_samples": len(train_ds),
             "val_samples": len(val_ds),
             "test_samples": len(test_ds),

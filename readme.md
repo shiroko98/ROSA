@@ -20,6 +20,62 @@ git status --short --branch
 git log --oneline -5
 ```
 
+## 预分词 + `memmap` 数据集
+
+- 构建脚本：`build_rosa_memmap_dataset.py`
+- 运行时模块：`rosa_memmap_dataset.py`
+- 训练入口：`--pretokenized_manifest`
+- 当前用途：
+  - 将原始 `text/json/jsonl` 语料离线预分词
+  - 写成：
+    - `train.tokens.bin`
+    - `train.offsets.npy`
+    - `train.lengths.npy`
+    - `dataset_manifest.json`
+  - 训练时按文档偏移动态切片，不再把全部 token/sample 展平到 Python list
+- 当前已支持：
+  - `doc_local + online_seq`
+  - `global_train + online_seq`
+- 当前尚未接入：
+  - `reference_precompute`
+  - 训练地址缓存
+  - 训练状态快照
+
+构建预分词数据集：
+
+```powershell
+conda run -n model python build_rosa_memmap_dataset.py `
+  --train_data_path data/minipile/train-00000-of-00012-6fbcb5acda05b3c0.jsonl `
+  --val_data_path data/minipile/validation-00000-of-00001-a2192e61a091cecb.jsonl `
+  --test_data_path data/minipile/test-00000-of-00001-010a6231c4b54d31.jsonl `
+  --data_format jsonl `
+  --json_text_keys text `
+  --max_train_docs 64 `
+  --max_val_docs 16 `
+  --max_test_docs 16 `
+  --tokenizer_name_or_path D:/codes/Qwen3.5-0.8B `
+  --out_dir outputs/minipile_memmap_qwen
+```
+
+直接从 manifest 训练：
+
+```powershell
+conda run -n model python train_qwen_llama_vs_rosa_v2.py `
+  --pretokenized_manifest outputs/minipile_memmap_qwen/dataset_manifest.json `
+  --tokenizer_name_or_path D:/codes/Qwen3.5-0.8B `
+  --arch_style qwen `
+  --seq_len 64 `
+  --batch_size 2 `
+  --epochs 1 `
+  --dim 64 `
+  --n_layers 2 `
+  --n_heads 4 `
+  --n_kv_heads 4 `
+  --intermediate_size 128 `
+  --rosa_recipe online_v1 `
+  --out_dir outputs/minipile_memmap_online_v1
+```
+
 ## Online ROSA 最小闭环
 
 - 入口能力：

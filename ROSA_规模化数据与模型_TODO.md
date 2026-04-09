@@ -19,8 +19,8 @@
 
 | 状态 | 优先级 | 任务 | 目标输出 | 完成标准 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| 进行中 | P0 | 预分词 + `memmap`/二进制数据集管线 | 可复用的数据构建脚本、manifest、训练加载器 | 不再需要把全部 token/sample 常驻 Python list；`doc_local + online_seq` 可直接从预分词二进制数据训练 | 当前第一优先级 |
-| 未开始 | P1 | 文档级索引与按需切片 | 文档偏移、长度、chunk 索引按需读取 | dataset `__getitem__` 动态切片，不复制大块 token | 与 `memmap` 主任务配套 |
+| 已完成 | P0 | 预分词 + `memmap`/二进制数据集管线 | 可复用的数据构建脚本、manifest、训练加载器 | 不再需要把全部 token/sample 常驻 Python list；`doc_local + online_seq` 可直接从预分词二进制数据训练 | 已新增构建脚本、manifest、训练入口 |
+| 已完成 | P1 | 文档级索引与按需切片 | 文档偏移、长度、chunk 索引按需读取 | dataset `__getitem__` 动态切片，不复制大块 token | `MemmapDocChunkDataset` 已落地 |
 | 未开始 | P1 | 稀疏 / 分片 `ValueStore` | 活跃项 gather + 可扩展表存储 | `per_layer` 不再线性吃完整词表乘层数的参数量 | 参考 Engram 的活跃项思路 |
 | 未开始 | P1 | 大模型训练基础设施 | activation checkpointing / 更稳 checkpoint / 梯度累积策略 | 大模型训练不中断、可恢复、显存可控 | 之后再接 FSDP/ZeRO |
 | 未开始 | P2 | 分布式训练 | FSDP/ZeRO 训练路径 | 单机多卡和更大模型训练可用 | 不与当前小实验入口耦死 |
@@ -46,6 +46,7 @@
 - 验证：
   - 文档数、token 总数、split 元数据可复现
   - 与现有 `tokenize_docs()` 结果逐文档一致
+  - [x] 已完成第一版：`build_rosa_memmap_dataset.py` 可直接构建 `dataset_manifest.json`
 
 ### 任务 B：`memmap` 训练数据集
 
@@ -55,6 +56,7 @@
 - 验证：
   - `input_ids / labels / rosa_memory_ids` 与现有 `DocChunkDataset` 对齐
   - `doc_local + online_seq` 小样本训练可直接运行
+  - [x] 已完成第一版：`MemmapDocChunkDataset` 按文档偏移动态切片，不再预展平 sample dict
 
 ### 任务 C：训练入口兼容
 
@@ -65,9 +67,25 @@
 - 验证：
   - CLI 可切换
   - 报告中能明确打印当前数据来源
+  - [x] 已完成第一版：`train_qwen_llama_vs_rosa_v2.py --pretokenized_manifest ...` 可直接训练
+
+## 当前实现边界
+
+- 当前 `memmap` 路径已支持：
+  - `doc_local + online_seq`
+  - `global_train + online_seq`
+  - 原始数据离线预分词写入 `tokens.bin + offsets.npy + lengths.npy + dataset_manifest.json`
+- 当前 `memmap` 路径暂未接入：
+  - `reference_precompute`
+  - 训练地址缓存
+  - 训练状态快照
+- 当前优先保留“训练期下一批地址异步预取”作为规模化主线加速方式
 
 ## 当前结论
 
 - 规模化阶段最先要解决的不是更多建模细节，而是数据与系统底座。
 - 当前的 `DocChunkDataset` 更适合中小规模实验，不适合大数据长期训练。
-- 第一优先级已经明确：先完成“预分词 + `memmap`/二进制数据集管线”。
+- “预分词 + `memmap`/二进制数据集管线”第一版已经完成，下一优先级转向：
+  - 稀疏 / 分片 `ValueStore`
+  - 大模型训练基础设施
+  - 地址引擎 GPU/Triton/CUDA 实现
