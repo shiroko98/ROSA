@@ -461,6 +461,7 @@
   - `scripts/launch_8gpu_ddp_online_v1.sh`
   - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
   - `scripts/launch_8gpu_fsdp_online_v1.sh`
+  - `scripts/server_first_run_8gpu_ddp_online_v1.sh`
   - 当前脚本已接入：
     - `memmap` 数据集
     - 编译型 CPU `online_sam`

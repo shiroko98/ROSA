@@ -235,6 +235,7 @@
    - `scripts/launch_8gpu_ddp_online_v1.sh`
    - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
    - `scripts/launch_8gpu_fsdp_online_v1.sh`
+   - `scripts/server_first_run_8gpu_ddp_online_v1.sh`
    当前服务器首跑顺序：
    - `DDP + online_v1`
    - `FSDP + online_v1`

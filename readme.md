@@ -228,6 +228,8 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `scripts/common_rosa_server.sh`
 - 预分词数据准备：
   - `scripts/prepare_memmap_dataset.sh`
+- 一键首跑脚本：
+  - `scripts/server_first_run_8gpu_ddp_online_v1.sh`
 - 稳妥首跑：
   - `scripts/launch_8gpu_ddp_online_v1.sh`
 - 最新建模特性版：
@@ -264,6 +266,12 @@ export MEMMAP_OUT_DIR=/data/rosa_runs/minipile_memmap
 export OUT_DIR=/data/rosa_runs/online_v1_ddp
 
 bash scripts/launch_8gpu_ddp_online_v1.sh
+```
+
+如果你想“一条命令从装环境跑到开训”，直接用：
+
+```bash
+bash scripts/server_first_run_8gpu_ddp_online_v1.sh
 ```
 
 如果已经提前构好了 manifest，也可以直接指定：
