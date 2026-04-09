@@ -482,6 +482,15 @@
     - 不能直接把 Windows 全量 `conda env export` 原样拿去 Linux 服务器
     - 现在已经改成“Linux 基础 conda 环境 + 单独 pip 依赖 + 可选 CPU 扩展构建”的迁移方式
     - 当前本机 `transformers` 元数据与运行时导入版本不一致，服务器脚本默认按运行时版本 `5.4.0` 安装
+- 预分词 `memmap` 构建已完成第二版改造：
+  - 新增 `rosa_memmap_builder.py`
+  - explicit split 路径改成流式读取、流式分词、流式写入 `tokens.bin`
+  - 支持 `--tokenize_workers`、`--tokenize_batch_docs`、`--progress_docs`
+  - 当前结论：
+    - 大数据下不再需要先把全部 tokenized docs 堆进内存后再统一写盘
+    - 输出目录会在构建早期就出现 `*.tokens.bin`
+    - 多进程分词小样本 smoke 已跑通
+    - 单独 `--data_path` 的兼容切分模式仍保留旧行为，不建议用于大数据
 
 ## 备注
 

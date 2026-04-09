@@ -82,6 +82,9 @@ rosa_prepare_memmap_manifest_if_needed() {
     --data_format "${DATA_FORMAT:-jsonl}"
     --split_mode "${SPLIT_MODE:-paragraph}"
     --json_text_keys "${JSON_TEXT_KEYS:-text,content,body,message}"
+    --tokenize_workers "${TOKENIZE_WORKERS:-1}"
+    --tokenize_batch_docs "${TOKENIZE_BATCH_DOCS:-64}"
+    --progress_docs "${PROGRESS_DOCS:-5000}"
     --out_dir "${MEMMAP_OUT_DIR}"
   )
 

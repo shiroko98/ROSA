@@ -76,6 +76,7 @@ bash scripts/install_model_env_server.sh
 ## 预分词 + `memmap` 数据集
 
 - 构建脚本：`build_rosa_memmap_dataset.py`
+- 构建模块：`rosa_memmap_builder.py`
 - 运行时模块：`rosa_memmap_dataset.py`
 - 训练入口：`--pretokenized_manifest`
 - 当前用途：
@@ -89,10 +90,36 @@ bash scripts/install_model_env_server.sh
 - 当前已支持：
   - `doc_local + online_seq`
   - `global_train + online_seq`
+- 当前显式 split 构建路径已支持：
+  - 流式读取原始文件
+  - 边分词边写入 `tokens.bin`
+  - 可选多进程分词：`--tokenize_workers`
+  - 进度日志：`--progress_docs`
 - 当前尚未接入：
   - `reference_precompute`
   - 训练地址缓存
   - 训练状态快照
+
+推荐的大数据构建方式：
+
+```bash
+python build_rosa_memmap_dataset.py \
+  --tokenizer_name_or_path /data/models/Qwen3.5-0.8B \
+  --data_format jsonl \
+  --json_text_keys text,content,body,message \
+  --train_data_path "/data/minipile/train-*.jsonl" \
+  --val_data_path "/data/minipile/validation-*.jsonl" \
+  --test_data_path "/data/minipile/test-*.jsonl" \
+  --tokenize_workers 8 \
+  --tokenize_batch_docs 64 \
+  --progress_docs 5000 \
+  --out_dir /data/rosa_runs/minipile_memmap
+```
+
+说明：
+
+- 显式 `train/val/test` 路径现在会走流式构建主路径，不再先把所有 token 全堆进内存。
+- 单独传 `--data_path` 的兼容模式仍会先读完整数据再切分；大数据不建议这么用。
 
 构建预分词数据集：
 
@@ -107,6 +134,9 @@ conda run -n model python build_rosa_memmap_dataset.py `
   --max_val_docs 16 `
   --max_test_docs 16 `
   --tokenizer_name_or_path D:/codes/Qwen3.5-0.8B `
+  --tokenize_workers 2 `
+  --tokenize_batch_docs 16 `
+  --progress_docs 100 `
   --out_dir outputs/minipile_memmap_qwen
 ```
 

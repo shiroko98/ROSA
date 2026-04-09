@@ -248,6 +248,14 @@
    当前原则：
    - 不直接复用 Windows 全量 `conda env export`
    - 服务器按 Linux 基础 conda 环境 + 单独 pip 安装来复现
+8. 已将预分词 `memmap` 构建升级为：
+   - explicit split 路径流式读写
+   - 可选多进程分词
+   - 进度日志
+   当前大数据推荐：
+   - 始终使用 `--train_data_path/--val_data_path/--test_data_path`
+   - 配合 `--tokenize_workers`
+   - 避免单独 `--data_path` 兼容模式
 
 ## 自我验证清单
 

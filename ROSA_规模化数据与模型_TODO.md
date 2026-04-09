@@ -75,6 +75,8 @@
   - `doc_local + online_seq`
   - `global_train + online_seq`
   - 原始数据离线预分词写入 `tokens.bin + offsets.npy + lengths.npy + dataset_manifest.json`
+  - explicit split 下的流式构建
+  - 可选多进程分词
 - 当前 `memmap` 路径暂未接入：
   - `reference_precompute`
   - 训练地址缓存

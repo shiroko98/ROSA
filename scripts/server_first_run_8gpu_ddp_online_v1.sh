@@ -24,6 +24,9 @@ export VAL_DATA_PATH="${VAL_DATA_PATH:-/data/minipile/val.jsonl}"
 export TEST_DATA_PATH="${TEST_DATA_PATH:-/data/minipile/test.jsonl}"
 export MEMMAP_OUT_DIR="${MEMMAP_OUT_DIR:-/data/rosa_runs/minipile_memmap}"
 export OUT_DIR="${OUT_DIR:-/data/rosa_runs/online_v1_ddp}"
+export TOKENIZE_WORKERS="${TOKENIZE_WORKERS:-8}"
+export TOKENIZE_BATCH_DOCS="${TOKENIZE_BATCH_DOCS:-64}"
+export PROGRESS_DOCS="${PROGRESS_DOCS:-5000}"
 
 # 如果已经提前构好 manifest，可直接指定这一项，
 # 脚本会跳过预分词构建阶段。
