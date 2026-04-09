@@ -288,6 +288,7 @@ export WANDB_GROUP=online_v1_8gpu
 export WANDB_RUN_NAME=minipile_qwen9b_online_v1
 export WANDB_TAGS=8gpu,ddp,online_v1
 export WANDB_MODE=online
+export ENABLE_BF16=1
 
 bash scripts/server/launch_8gpu_ddp_online_v1.sh
 ```

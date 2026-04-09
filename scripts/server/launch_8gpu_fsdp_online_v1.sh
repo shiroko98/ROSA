@@ -46,6 +46,10 @@ if [[ "${ACTIVATION_CHECKPOINTING}" == "1" ]]; then
   TRAIN_ARGS+=(--activation_checkpointing)
 fi
 
+if [[ "${ENABLE_BF16}" == "1" ]]; then
+  TRAIN_ARGS+=(--bf16)
+fi
+
 if [[ "${TRAIN_TIMING}" == "1" ]]; then
   TRAIN_ARGS+=(--train_timing)
 fi

@@ -87,6 +87,7 @@ export RUN_MODELS="${RUN_MODELS:-rosa_fused}"
 export SAVE_EVERY_EPOCHS="${SAVE_EVERY_EPOCHS:-1}"
 export TRAIN_TIMING="${TRAIN_TIMING:-1}"
 export ACTIVATION_CHECKPOINTING="${ACTIVATION_CHECKPOINTING:-1}"
+export ENABLE_BF16="${ENABLE_BF16:-0}"
 
 # =========================
 # 6. wandb 监控
