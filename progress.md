@@ -456,6 +456,22 @@
     - `FSDP` 首版暂不支持 `sparse ValueStore` 训练
     - 当前本地行分片表不会自动变成跨卡 all-to-all memory 表
     - 当前 FSDP 保存仍是 full-state 形态，先满足“8 卡可跑”，后续再继续优化
+- 8 卡服务器脚本已补齐：
+  - `scripts/prepare_memmap_dataset.sh`
+  - `scripts/launch_8gpu_ddp_online_v1.sh`
+  - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+  - `scripts/launch_8gpu_fsdp_online_v1.sh`
+  - 当前脚本已接入：
+    - `memmap` 数据集
+    - 编译型 CPU `online_sam`
+    - activation checkpointing
+    - 梯度累积
+    - checkpoint/save-resume
+    - DDP/FSDP 入口
+  - 当前推荐首跑顺序：
+    - `DDP + online_v1`
+    - `FSDP + online_v1`
+    - `DDP + online_v2_sparse_sharded`
 
 ## 备注
 

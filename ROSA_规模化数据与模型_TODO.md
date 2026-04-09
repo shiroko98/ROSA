@@ -103,6 +103,10 @@
   - `DistributedSampler`
   - 分布式训练/评估指标归约
   - FSDP/DDP 下的 checkpoint/save-resume v1
+  - 8 卡服务器启动脚本：
+    - `scripts/launch_8gpu_ddp_online_v1.sh`
+    - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+    - `scripts/launch_8gpu_fsdp_online_v1.sh`
 - 当前分布式训练已知边界：
   - `FSDP` 首版暂不支持 `--rosa_sparse_value_training`
   - 当前“本地行分片 ValueStore”不会自动变成跨卡 all-to-all 表

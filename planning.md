@@ -230,6 +230,15 @@
 4. 当前已用 `--train_timing` 验证并完成两轮修复：
    - async overlap 把训练中等待地址的成本压到近零
    - `fast online_sam` 把纯 sequence 地址层成本压到 `stateful` 的约 `39%`
+6. 已补 8 卡服务器脚本：
+   - `scripts/prepare_memmap_dataset.sh`
+   - `scripts/launch_8gpu_ddp_online_v1.sh`
+   - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+   - `scripts/launch_8gpu_fsdp_online_v1.sh`
+   当前服务器首跑顺序：
+   - `DDP + online_v1`
+   - `FSDP + online_v1`
+   - `DDP + online_v2_sparse_sharded`
 
 ## 自我验证清单
 

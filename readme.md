@@ -167,6 +167,67 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
   - `FSDP` 首版暂不支持 `--rosa_sparse_value_training`
   - 当前 FSDP checkpoint 仍是 full-state 保存，适合先跑通，不是最终高效形态
 
+## 8 卡服务器启动脚本
+
+- 这些脚本面向 Linux 服务器 Bash 环境，路径请统一使用 Linux/POSIX 形式，例如 `/data/...`，不要使用 `D:/...`
+- 脚本目录：`scripts/`
+- 公共环境与辅助函数：
+  - `scripts/common_rosa_server.sh`
+- 预分词数据准备：
+  - `scripts/prepare_memmap_dataset.sh`
+- 稳妥首跑：
+  - `scripts/launch_8gpu_ddp_online_v1.sh`
+- 最新建模特性版：
+  - `scripts/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
+- FSDP 试跑版：
+  - `scripts/launch_8gpu_fsdp_online_v1.sh`
+
+推荐顺序：
+
+1. 先跑 `DDP + online_v1`
+2. 再试 `FSDP + online_v1`
+3. 最后再试 `DDP + online_v2_sparse_sharded`
+
+这些脚本已经接入：
+
+- `memmap` / `pretokenized manifest`
+- 在线 ROSA recipe
+- 编译型 CPU `online_sam`
+- 训练期下一批地址异步预取
+- activation checkpointing
+- 梯度累积
+- checkpoint/save-resume
+- DDP / FSDP 入口
+
+一个最常用的 8 卡首跑方式：
+
+```bash
+export CONDA_ENV_NAME=model
+export TOKENIZER_NAME_OR_PATH=/data/models/Qwen3.5-0.8B
+export TRAIN_DATA_PATH=/data/minipile/train.jsonl
+export VAL_DATA_PATH=/data/minipile/val.jsonl
+export TEST_DATA_PATH=/data/minipile/test.jsonl
+export MEMMAP_OUT_DIR=/data/rosa_runs/minipile_memmap
+export OUT_DIR=/data/rosa_runs/online_v1_ddp
+
+bash scripts/launch_8gpu_ddp_online_v1.sh
+```
+
+如果已经提前构好了 manifest，也可以直接指定：
+
+```bash
+export PRETOKENIZED_MANIFEST=/data/rosa_runs/minipile_memmap/dataset_manifest.json
+bash scripts/launch_8gpu_ddp_online_v1.sh
+```
+
+当前 FSDP 试跑建议：
+
+- 先继续使用 `online_v1`
+- 不要叠加 `online_v2_sparse` / `online_v2_sparse_sharded`
+- 不要显式开启 `--rosa_sparse_value_training`
+
+因为当前首版 `FSDP` 还不支持 sparse `ValueStore` 训练。
+
 ## Context-Aware Gate
 
 - 开关：`--rosa_context_gate`
