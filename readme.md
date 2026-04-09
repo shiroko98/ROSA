@@ -256,6 +256,14 @@ conda run -n model python train_qwen_llama_vs_rosa_v2.py `
     - `loss / ppl / token_acc / valid_tokens`
     - `rosa_*` 指标
     - timing 指标（如果启用 `--train_timing`）
+    - 常用大模型训练指标：
+      - `optimizer_lr_dense / optimizer_lr_sparse`
+      - `grad_norm_dense / grad_norm_sparse`
+      - `grad_clip_dense_preclip_norm`
+      - `step_wall_ms / tokens_per_s_wall`
+      - `tokens_seen_total`
+      - `epoch_progress`
+      - `cuda_memory_allocated_mb / reserved_mb / max_*`
   - 每个 epoch 结束后还会补充：
     - `train_epoch`
     - `val`

@@ -68,6 +68,7 @@ from rosa_runtime import RosaAddressBatch, RosaHotAddressCache, RosaInjectionPay
 from rosa_session import RosaBatchSession
 from rosa_timing import TimingCollector
 from rosa_train_async import maybe_wrap_train_address_prefetch, read_async_prefetch_batch_stats
+from rosa_train_monitor import collect_step_system_metrics, reset_cuda_peak_memory
 from rosa_training_cache import build_sequence_online_precomputed_rosa
 from rosa_training_snapshot import build_sequence_online_state_snapshots
 from rosa_value_store import RosaValueStore
@@ -2150,6 +2151,7 @@ def train_one_model(
         history = resume_state.get("history", history)
         global_step = int(resume_state.get("global_step", 0))
         start_epoch = int(resume_state.get("epoch", 0)) + 1
+    total_tokens_seen = 0
 
     for epoch in range(start_epoch, epochs + 1):
         model.train()
@@ -2168,6 +2170,8 @@ def train_one_model(
         step_rosa_steps = 0
         step_timing_rows: List[Dict[str, float]] = []
         next_batch_started_at = time.perf_counter()
+        step_started_at = time.perf_counter()
+        reset_cuda_peak_memory(device, enabled=(wandb_logger is not None and wandb_logger.enabled))
         optimizer_bundle.zero_grad(set_to_none=True)
 
         num_batches = len(train_loader)
@@ -2222,10 +2226,15 @@ def train_one_model(
                 with step_timer.section("backward"):
                     (loss / grad_accum_steps).backward()
 
+            dense_clip_norm = 0.0
+            step_lr_stats: Dict[str, float] = {}
+            step_grad_stats: Dict[str, float] = {}
             if should_step:
+                step_lr_stats = optimizer_bundle.current_lrs()
+                step_grad_stats = optimizer_bundle.grad_norms()
                 with step_timer.section("optim_step"):
                     if grad_clip > 0:
-                        optimizer_bundle.clip_grad_norm_(grad_clip)
+                        dense_clip_norm = optimizer_bundle.clip_grad_norm_(grad_clip)
                     optimizer_bundle.step()
                 with step_timer.section("optim_zero_grad"):
                     optimizer_bundle.zero_grad(set_to_none=True)
@@ -2235,6 +2244,7 @@ def train_one_model(
             num = mask.sum().item()
             total_nll += float(loss.item()) * num
             total_tokens += num
+            total_tokens_seen += num
 
             pred = out["logits"].argmax(dim=-1)
             batch_correct = ((pred == y) & mask).sum().item()
@@ -2284,13 +2294,32 @@ def train_one_model(
                             step_metrics[k] = v / float(step_rosa_steps)
                     if step_timing_rows:
                         step_metrics.update(average_prefixed_metric(step_timing_rows, "timing_"))
+                    step_metrics.update(step_lr_stats)
+                    step_metrics.update(step_grad_stats)
+                    if grad_clip > 0:
+                        step_metrics["grad_clip_dense_threshold"] = float(grad_clip)
+                        step_metrics["grad_clip_dense_preclip_norm"] = float(dense_clip_norm)
+                    step_metrics.update(
+                        collect_step_system_metrics(
+                            device=device,
+                            step_started_at=step_started_at,
+                            step_tokens=step_tokens,
+                            total_tokens_seen=total_tokens_seen,
+                            epoch=epoch,
+                            batch_idx=batch_idx,
+                            num_batches=num_batches,
+                            log_cuda_memory=True,
+                        )
+                    )
                     wandb_logger.log_metrics(step_metrics, step=global_step, prefix=f"{run_name}/train_step")
+                    reset_cuda_peak_memory(device, enabled=True)
                 step_nll = 0.0
                 step_tokens = 0
                 step_correct = 0
                 step_rosa_stats_sum = {}
                 step_rosa_steps = 0
                 step_timing_rows = []
+                step_started_at = time.perf_counter()
             next_batch_started_at = time.perf_counter()
 
         total_nll, total_tokens, correct, rosa_steps = reduce_scalar_sums(

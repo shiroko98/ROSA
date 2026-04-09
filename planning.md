@@ -262,6 +262,13 @@
 9. 已补 wandb 监控：
    - 训练脚本新增 `--wandb*` 参数
    - 当前按 `global_step` 持续上报训练指标
+   - 当前已补常用大模型训练监控指标：
+     - learning rate
+     - gradient norm
+     - grad clip 前范数
+     - wall-clock 吞吐
+     - token 累积进度
+     - CUDA 显存占用/峰值
    - 服务器脚本统一从 `scripts/server/server_env.sh` 读取 `ENABLE_WANDB` 等开关
 
 ## 自我验证清单

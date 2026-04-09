@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
+import math
 
 import torch
 import torch.nn as nn
@@ -39,9 +40,41 @@ class RosaOptimizerBundle:
             "rosa_sparse_optimizer_params": float(sum(p.numel() for p in self.sparse_params)),
         }
 
+    def current_lrs(self) -> Dict[str, float]:
+        return {
+            "optimizer_lr_dense": float(self.dense_optimizer.param_groups[0]["lr"]) if self.dense_optimizer.param_groups else 0.0,
+            "optimizer_lr_sparse": (
+                float(self.sparse_optimizer.param_groups[0]["lr"])
+                if self.sparse_optimizer is not None and self.sparse_optimizer.param_groups
+                else 0.0
+            ),
+        }
+
+    def grad_norms(self) -> Dict[str, float]:
+        return {
+            "grad_norm_dense": _param_group_grad_norm(self.dense_params),
+            "grad_norm_sparse": _param_group_grad_norm(self.sparse_params),
+        }
+
 
 def _trainable_parameters(module: nn.Module) -> List[nn.Parameter]:
     return [param for param in module.parameters() if param.requires_grad]
+
+
+def _param_group_grad_norm(params: Iterable[nn.Parameter]) -> float:
+    sq_sum = 0.0
+    for param in params:
+        grad = param.grad
+        if grad is None:
+            continue
+        if grad.is_sparse:
+            values = grad.coalesce().values()
+            if values.numel() == 0:
+                continue
+            sq_sum += float(values.detach().float().pow(2).sum().item())
+        else:
+            sq_sum += float(grad.detach().float().pow(2).sum().item())
+    return math.sqrt(sq_sum) if sq_sum > 0.0 else 0.0
 
 
 def build_training_optimizers(

@@ -501,6 +501,10 @@
     - `loss / ppl / token_acc`
     - `rosa_*`
     - timing 指标（如果启用 `--train_timing`）
+    - learning rate / gradient norm / grad clip 前范数
+    - wall-clock step 时长 / 吞吐
+    - 累积 tokens 进度
+    - CUDA 显存当前值与峰值
   - 服务器脚本已支持从 `scripts/server/server_env.sh` 一处开启 `ENABLE_WANDB=1`
 
 ## 备注
