@@ -287,6 +287,18 @@
      - `eval_num_workers=2`
      - `pin_memory=on`
      - `persistent_workers=on`
+11. 已补 `online_v1` 容量匹配 baseline 对照：
+   - 训练脚本新增 `--baseline_capacity_match_rosa`
+   - baseline 在与 ROSA 相同的注入层位置加入可训练 residual adapter
+   - adapter 会真实影响 hidden state，参与训练和预测
+   - adapter 宽度根据 ROSA 额外参数量自动估算
+   - 服务器新增容量匹配 baseline 启动脚本
+   - 对照原则：
+     - 同 tokenizer
+     - 同数据 manifest
+     - 同模型主干超参
+     - 同训练超参
+     - 只关闭 ROSA 分支，并使用同等额外表达能力的 adapter
 
 ## 自我验证清单
 

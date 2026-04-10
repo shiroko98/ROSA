@@ -1442,6 +1442,100 @@ class BaseLM(nn.Module):
         return out
 
 
+def resolve_inject_layer_ids(cfg: ModelConfig, inject_layers: int, inject_layer_ids: Optional[Sequence[int]]) -> Tuple[int, ...]:
+    if inject_layer_ids:
+        normalized_ids = sorted({int(x) for x in inject_layer_ids})
+    else:
+        normalized_ids = list(range(max(0, min(inject_layers, cfg.n_layers))))
+    for layer_id in normalized_ids:
+        if layer_id < 0 or layer_id >= cfg.n_layers:
+            raise ValueError(f"inject layer id 超出范围: {layer_id}, n_layers={cfg.n_layers}")
+    return tuple(normalized_ids)
+
+
+def estimate_capacity_adapter_width(extra_params: int, *, dim: int, slots: int) -> Tuple[int, int]:
+    if extra_params <= 0 or slots <= 0:
+        return 0, max(0, int(extra_params))
+    # 每个 adapter slot 使用 down/up 两个无 bias 线性层，因此参数量是 2 * dim * width。
+    per_width_params = max(1, 2 * int(dim) * int(slots))
+    width = max(1, int(extra_params) // per_width_params)
+    used = width * per_width_params
+    padding = max(0, int(extra_params) - used)
+    return width, padding
+
+
+class CapacityMatchedBaseLM(BaseLM):
+    """Baseline with trainable residual adapters used as a capacity-matched control."""
+
+    def __init__(
+        self,
+        cfg: ModelConfig,
+        *,
+        adapter_layer_ids: Sequence[int],
+        adapter_width: int,
+        padding_params: int = 0,
+    ):
+        super().__init__(cfg)
+        self.adapter_layer_ids = tuple(adapter_layer_ids)
+        self.adapter_layer_index = {layer_id: slot_idx for slot_idx, layer_id in enumerate(self.adapter_layer_ids)}
+        self.adapter_width = max(0, int(adapter_width))
+        self.adapter_down = nn.ModuleList(
+            [nn.Linear(cfg.dim, self.adapter_width, bias=False) for _ in self.adapter_layer_ids]
+        )
+        self.adapter_up = nn.ModuleList(
+            [nn.Linear(self.adapter_width, cfg.dim, bias=False) for _ in self.adapter_layer_ids]
+        )
+        for proj in self.adapter_up:
+            nn.init.zeros_(proj.weight)
+        self.capacity_padding = nn.Parameter(torch.zeros(max(0, int(padding_params)), dtype=torch.float32))
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        rosa_memory_ids: Optional[torch.Tensor] = None,
+        rosa_online_state: Optional[OnlineRosaBatchState] = None,
+        rosa_state_snapshots: Optional[Sequence[RosaStateSnapshot]] = None,
+        rosa_replay_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_ids: Optional[torch.Tensor] = None,
+        rosa_precomputed_match_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_raw_best_lens: Optional[torch.Tensor] = None,
+        rosa_precomputed_source: Optional[str] = None,
+        timing_collector: Optional[TimingCollector] = None,
+    ):
+        with (timing_collector.section("model_trunk") if timing_collector is not None else nullcontext()):
+            x = self.embed_tokens(input_ids)
+            seqlen = input_ids.shape[1]
+            attn_mask = torch.full((seqlen, seqlen), float("-inf"), device=input_ids.device)
+            attn_mask = torch.triu(attn_mask, diagonal=1)[None, None, :, :]
+            for layer_id, blk in enumerate(self.layers):
+                x = block_forward_with_activation_checkpoint(
+                    blk,
+                    x,
+                    attn_mask,
+                    enabled=self.activation_checkpointing_enabled,
+                )
+                slot_idx = self.adapter_layer_index.get(layer_id)
+                if slot_idx is not None and self.adapter_width > 0:
+                    x = x + self.adapter_up[slot_idx](F.silu(self.adapter_down[slot_idx](x)))
+            x = self.norm(x)
+        with (timing_collector.section("model_head") if timing_collector is not None else nullcontext()):
+            logits = self.lm_head(x)
+        out = {"logits": logits}
+        if labels is not None:
+            with (timing_collector.section("model_loss") if timing_collector is not None else nullcontext()):
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    labels.reshape(-1),
+                    ignore_index=-100,
+                    reduction="mean",
+                )
+                if self.capacity_padding.numel() > 0:
+                    loss = loss + self.capacity_padding.sum() * 0.0
+            out["loss"] = loss
+        return out
+
+
 class RosaFusedLM(BaseLM):
     def __init__(
         self,
@@ -1467,14 +1561,7 @@ class RosaFusedLM(BaseLM):
         self.pad_id = pad_id
         self.rosa_backend = rosa_backend
         self.min_match_len = min_match_len
-        if inject_layer_ids:
-            normalized_ids = sorted({int(x) for x in inject_layer_ids})
-        else:
-            normalized_ids = list(range(max(0, min(inject_layers, cfg.n_layers))))
-        for layer_id in normalized_ids:
-            if layer_id < 0 or layer_id >= cfg.n_layers:
-                raise ValueError(f"inject layer id 超出范围: {layer_id}, n_layers={cfg.n_layers}")
-        self.inject_layer_ids = tuple(normalized_ids)
+        self.inject_layer_ids = resolve_inject_layer_ids(cfg, inject_layers, inject_layer_ids)
         self.inject_layer_index = {layer_id: slot_idx for slot_idx, layer_id in enumerate(self.inject_layer_ids)}
         self.inject_layers = len(self.inject_layer_ids)
         self.rosa_scale = rosa_scale
@@ -2730,6 +2817,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="从某个训练 checkpoint 恢复。当前要求与 --run_models baseline|rosa_fused 搭配使用。")
     parser.add_argument("--run_models", type=str, default="both", choices=["both", "baseline", "rosa_fused"],
                         help="控制本次运行训练 baseline、rosa_fused，还是两者都训练。")
+    parser.add_argument("--baseline_capacity_match_rosa", action="store_true",
+                        help="训练 baseline 时使用可训练 residual adapter 匹配 ROSA 额外容量，用于更公平的表达能力对照。")
     parser.add_argument("--distributed_strategy", type=str, default="none", choices=["none", "ddp", "fsdp"],
                         help="分布式训练策略。服务器上推荐通过 torchrun 启动。")
     parser.add_argument("--distributed_backend", type=str, default="",
@@ -3036,8 +3125,43 @@ def main():
 
     base_params = count_params(baseline)
     rosa_params = count_params(rosa_model)
+    baseline_capacity_extra_params = 0
+    baseline_adapter_width = 0
+    baseline_capacity_padding = 0
+    baseline_capacity_layers: Tuple[int, ...] = ()
+    if args.baseline_capacity_match_rosa:
+        if rosa_params < base_params:
+            raise ValueError(
+                "--baseline_capacity_match_rosa 要求 ROSA 参数量不小于 baseline；"
+                f"当前 baseline={base_params:,}, rosa={rosa_params:,}。"
+            )
+        baseline_capacity_extra_params = rosa_params - base_params
+        baseline_capacity_layers = resolve_inject_layer_ids(
+            cfg,
+            args.rosa_inject_layers,
+            parse_int_csv_arg(args.rosa_inject_layer_ids),
+        )
+        baseline_adapter_width, baseline_capacity_padding = estimate_capacity_adapter_width(
+            baseline_capacity_extra_params,
+            dim=cfg.dim,
+            slots=len(baseline_capacity_layers),
+        )
+        set_seed(args.seed)
+        baseline = CapacityMatchedBaseLM(
+            cfg,
+            adapter_layer_ids=baseline_capacity_layers,
+            adapter_width=baseline_adapter_width,
+            padding_params=baseline_capacity_padding,
+        )
+        base_params = count_params(baseline)
     log(f"baseline params: {base_params:,}")
     log(f"rosa params    : {rosa_params:,}")
+    log(f"baseline capacity match ROSA: {args.baseline_capacity_match_rosa}")
+    if args.baseline_capacity_match_rosa:
+        log(f"baseline adapter layers: {list(baseline_capacity_layers)}")
+        log(f"baseline adapter width: {baseline_adapter_width}")
+        log(f"baseline capacity extra params: {baseline_capacity_extra_params:,}")
+        log(f"baseline capacity padding params: {baseline_capacity_padding:,}")
     if base_params == rosa_params:
         log("参数量完全一致（ROSA 分支未引入额外可训练参数）。")
     else:
@@ -3070,6 +3194,10 @@ def main():
             "param_count": {
                 "baseline": base_params,
                 "rosa_fused": rosa_params,
+                "baseline_capacity_matched": bool(args.baseline_capacity_match_rosa),
+                "baseline_capacity_extra_params": baseline_capacity_extra_params,
+                "baseline_capacity_adapter_width": baseline_adapter_width,
+                "baseline_capacity_padding": baseline_capacity_padding,
             },
             "distributed": {
                 "strategy": args.distributed_strategy,
@@ -3180,6 +3308,10 @@ def main():
         "param_count": {
             "baseline": base_params,
             "rosa_fused": rosa_params,
+            "baseline_capacity_matched": bool(args.baseline_capacity_match_rosa),
+            "baseline_capacity_extra_params": baseline_capacity_extra_params,
+            "baseline_capacity_adapter_width": baseline_adapter_width,
+            "baseline_capacity_padding": baseline_capacity_padding,
         },
         "distributed": {
             "strategy": args.distributed_strategy,

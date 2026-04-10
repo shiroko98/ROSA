@@ -331,6 +331,9 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
   - `scripts/server/server_first_run_8gpu_ddp_online_v1.sh`
 - 稳妥首跑：
   - `scripts/server/launch_8gpu_ddp_online_v1.sh`
+- 容量匹配 baseline 对照：
+  - `scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v1_equal_param_baseline.sh`
 - 最新建模特性版：
   - `scripts/server/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
 - FSDP 试跑版：
@@ -373,6 +376,24 @@ bash scripts/server/server_first_run_8gpu_ddp_online_v1.sh
 export PRETOKENIZED_MANIFEST=/data/rosa_runs/minipile_memmap/dataset_manifest.json
 bash scripts/server/launch_8gpu_ddp_online_v1.sh
 ```
+
+跑当前 `online_v1` 的容量匹配 baseline：
+
+```bash
+export PRETOKENIZED_MANIFEST=/mnt/data/Codes/RWKV/ROSA/memmap_out/dataset_manifest.json
+export BASELINE_OUT_DIR=/mnt/data/Codes/RWKV/ROSA/rosa_runs_capacity_baseline
+export BASELINE_WANDB_RUN_NAME=minipile_qwen_ROSA_v1_capacity_baseline
+
+bash scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh
+```
+
+说明：
+
+- 该脚本会设置 `RUN_MODELS=baseline`，并额外传入 `--baseline_capacity_match_rosa`
+- baseline 会在与 ROSA 相同的注入层位置加入可训练 residual adapter
+- adapter 会真实改变 hidden state，并参与训练和预测
+- adapter 宽度会根据当前 ROSA 多出来的参数量自动估算；极少量无法整除的参数会以 padding 记录在 summary 里
+- 这个对照比“只补不生效的参数”更适合评估 ROSA 是否真的优于同等表达能力的主干增强
 
 针对当前这台服务器，推荐先在 `scripts/server/server_env.sh` 里维护这些默认值：
 

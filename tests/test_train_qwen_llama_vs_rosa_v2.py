@@ -154,6 +154,36 @@ class FairComparisonTests(unittest.TestCase):
                 msg=f"parameter mismatch at {key}",
             )
 
+    def test_capacity_matched_baseline_adds_trainable_adapter(self):
+        rosa_mod.set_seed(1234)
+        baseline = rosa_mod.BaseLM(self.cfg)
+        rosa_mod.set_seed(1234)
+        matched = rosa_mod.CapacityMatchedBaseLM(
+            self.cfg,
+            adapter_layer_ids=[0],
+            adapter_width=2,
+            padding_params=3,
+        )
+
+        expected_extra = 2 * self.cfg.dim * 2 + 3
+        self.assertEqual(rosa_mod.count_params(matched), rosa_mod.count_params(baseline) + expected_extra)
+
+        input_ids = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+        labels = torch.tensor([[2, 3, 4, 5]], dtype=torch.long)
+        matched_out = matched(input_ids, labels)
+
+        matched_out["loss"].backward()
+        self.assertIsNotNone(matched.adapter_up[0].weight.grad)
+        self.assertIsNotNone(matched.adapter_down[0].weight.grad)
+        self.assertIsNotNone(matched.capacity_padding.grad)
+        self.assertGreater(float(matched.adapter_up[0].weight.grad.abs().sum()), 0.0)
+
+    def test_estimate_capacity_adapter_width_tracks_remaining_padding(self):
+        width, padding = rosa_mod.estimate_capacity_adapter_width(100, dim=8, slots=2)
+
+        self.assertEqual(width, 3)
+        self.assertEqual(padding, 4)
+
     def test_train_loader_order_is_repeatable_for_same_seed(self):
         docs_tokens = [
             [1, 2, 3, 4, 5],

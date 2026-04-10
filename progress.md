@@ -533,6 +533,16 @@
     - `batch_size=2`
     - `grad_accum_steps=4`
     - `dim=1536 / layers=24 / heads=16 / kv_heads=8 / intermediate=6144`
+- 已补容量匹配 baseline 对照入口：
+  - 训练脚本新增 `--baseline_capacity_match_rosa`
+  - 新增 `CapacityMatchedBaseLM`
+  - baseline 会在与 ROSA 相同的注入层位置加入可训练 residual adapter
+  - adapter 会真实改变 hidden state，并参与训练和预测
+  - adapter 宽度会根据当前 ROSA 多出来的参数量自动估算，少量无法整除的参数会以 padding 记录在 summary 中
+  - 新增服务器脚本：
+    - `scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh`
+    - `scripts/server/server_first_run_8gpu_ddp_online_v1_equal_param_baseline.sh`
+  - 该入口用于和已跑通的 `online_v1` ROSA 结果做表达能力更接近的 baseline 对照
 
 ## 备注
 
