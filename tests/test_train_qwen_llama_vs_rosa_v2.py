@@ -184,6 +184,39 @@ class FairComparisonTests(unittest.TestCase):
         self.assertEqual(width, 3)
         self.assertEqual(padding, 4)
 
+    def test_capacity_matched_baseline_can_match_online_v2_param_count(self):
+        rosa_mod.set_seed(2026)
+        rosa_model = rosa_mod.RosaFusedLM(
+            self.cfg,
+            pad_id=0,
+            inject_layers=1,
+            inject_layer_ids=[0],
+            rosa_value_mode="per_layer",
+            use_context_gate=True,
+        )
+        rosa_params = rosa_mod.count_params(rosa_model)
+
+        rosa_mod.set_seed(2026)
+        baseline = rosa_mod.BaseLM(self.cfg)
+        base_params = rosa_mod.count_params(baseline)
+
+        extra_params = rosa_params - base_params
+        self.assertGreater(extra_params, 0)
+
+        adapter_width, padding = rosa_mod.estimate_capacity_adapter_width(
+            extra_params,
+            dim=self.cfg.dim,
+            slots=1,
+        )
+        matched = rosa_mod.CapacityMatchedBaseLM(
+            self.cfg,
+            adapter_layer_ids=[0],
+            adapter_width=adapter_width,
+            padding_params=padding,
+        )
+
+        self.assertEqual(rosa_mod.count_params(matched), rosa_params)
+
     def test_train_loader_order_is_repeatable_for_same_seed(self):
         docs_tokens = [
             [1, 2, 3, 4, 5],

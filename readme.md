@@ -331,9 +331,16 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
   - `scripts/server/server_first_run_8gpu_ddp_online_v1.sh`
 - 稳妥首跑：
   - `scripts/server/launch_8gpu_ddp_online_v1.sh`
+- `online_v2` 训练入口：
+  - `scripts/server/launch_8gpu_ddp_online_v2.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v2.sh`
 - 容量匹配 baseline 对照：
   - `scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh`
   - `scripts/server/server_first_run_8gpu_ddp_online_v1_equal_param_baseline.sh`
+- 容量匹配 compare 入口：
+  - `scripts/server/launch_8gpu_ddp_capacity_compare.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_compare.sh`
 - 最新建模特性版：
   - `scripts/server/launch_8gpu_ddp_online_v2_sparse_sharded.sh`
 - FSDP 试跑版：
@@ -344,8 +351,10 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
 推荐顺序：
 
 1. 先跑 `DDP + online_v1`
-2. 再试 `FSDP + online_v1`
-3. 最后再试 `DDP + online_v2_sparse_sharded`
+2. 再跑 `DDP + online_v2`
+3. 接着跑 `online_v2 + capacity compare`
+4. 再试 `FSDP + online_v1`
+5. 最后再试 `DDP + online_v2_sparse_sharded`
 
 这些脚本已经接入：
 
@@ -364,10 +373,50 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
 bash scripts/server/launch_8gpu_ddp_online_v1.sh
 ```
 
+直接跑 `online_v2`：
+
+```bash
+export PRETOKENIZED_MANIFEST=/mnt/data/Codes/RWKV/ROSA/memmap_out/dataset_manifest.json
+export OUT_DIR=/mnt/data/Codes/RWKV/ROSA/rosa_runs_online_v2
+export WANDB_RUN_NAME=minipile_qwen_ROSA_online_v2
+export WANDB_GROUP=online_v2
+
+bash scripts/server/launch_8gpu_ddp_online_v2.sh
+```
+
 如果你想“一条命令从装环境跑到开训”，直接用：
 
 ```bash
 bash scripts/server/server_first_run_8gpu_ddp_online_v1.sh
+```
+
+如果你想一条命令跑 `online_v2` 的“ROSA vs capacity-matched baseline”对照：
+
+```bash
+export PRETOKENIZED_MANIFEST=/mnt/data/Codes/RWKV/ROSA/memmap_out/dataset_manifest.json
+export OUT_DIR=/mnt/data/Codes/RWKV/ROSA/rosa_runs
+export WANDB_RUN_NAME=minipile_qwen_ROSA_online_v2
+export WANDB_GROUP=online_v2
+
+bash scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh
+```
+
+说明：
+
+- 这条 compare 脚本会自动设置：
+  - `RUN_MODELS=both`
+  - `--baseline_capacity_match_rosa`
+- 输出目录默认会变成：
+  - `${OUT_DIR}_online_v2_capacity_compare`
+- `wandb` 默认会自动追加：
+  - `run_name=online_v2_capacity_compare`
+  - `group=online_v2_capacity_compare`
+  - tags：`capacity_compare,baseline_capacity_matched,online_v2`
+- 如果你想对别的 recipe 做同样的 compare，不用新写脚本，直接：
+
+```bash
+export ROSA_RECIPE=online_v2_sparse_sharded
+bash scripts/server/launch_8gpu_ddp_capacity_compare.sh
 ```
 
 如果已经提前构好了 manifest，也可以直接指定：
@@ -547,6 +596,7 @@ export DATALOADER_PERSISTENT_WORKERS=1
   - `--rosa_value_shards 4`
 - `online_v1` 当前默认仍走在线主线语义，不会自动启用训练地址缓存
 - `online_v2` 当前更适合作为“进阶实验 recipe”，用于验证 per-layer ValueStore 是否值得正式进入主线
+- 当前已补 `online_v2` 的服务器训练脚本与 capacity compare 入口，适合继续做“效果 vs 成本 vs 公平 baseline”的集中对照
 - `online_v2_sparse` / `online_v2_sparse_sharded` 当前更适合作为规模化实验入口：
   - 前者验证稀疏活跃行训练
   - 后者验证单机本地分片表存储

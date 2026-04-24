@@ -44,6 +44,7 @@
 - [x] 规模化 P1: 本地行分片 `ValueStore` v1
 - [x] 规模化 P1: 大模型训练基础设施 v1
 - [x] 规模化 P2: 分布式训练 v1（DDP/FSDP）
+- [x] 在线训练 `online_v2` 的服务器启动脚本与 capacity compare 对照入口
 - [x] 补逐 token 一致性测试
 - [x] 完成自我验证并提交本轮 commit
 
@@ -292,6 +293,19 @@
   - `tests/test_rosa_sparse_value_training.py` 通过
   - 全量 `86` 个测试通过
   - CLI smoke：`train_qwen_llama_vs_rosa_v2.py --rosa_recipe online_v2_sparse ...` 已跑通
+- 已补 `online_v2` 服务器启动与对照入口：
+  - `scripts/server/launch_8gpu_ddp_online_v2.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v2.sh`
+  - `scripts/server/launch_8gpu_ddp_capacity_compare.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_compare.sh`
+- 当前能力：
+  - 可直接跑 `DDP + online_v2`
+  - 可直接在同一任务里跑 `run_models=both + --baseline_capacity_match_rosa`
+  - compare 脚本会自动按当前 `ROSA_RECIPE` 推导输出目录、wandb run/group/tag，减少手工改名
+- 当前自检结果补充：
+  - `tests/test_train_qwen_llama_vs_rosa_v2.py` 已新增 `online_v2` 容量匹配参数量回归
+  - 已验证 `CapacityMatchedBaseLM` 可与 `online_v2` 的额外参数量严格对齐
 
 ## 自我验证记录
 
@@ -328,6 +342,8 @@
 - `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v2 --rosa_online_sam_impl fast --train_timing`
 - `conda run -n model python -m unittest tests.test_rosa_training_snapshot tests.test_train_qwen_llama_vs_rosa_v2`
 - `conda run -n model python -m py_compile rosa_addressing.py rosa_training_snapshot.py rosa_train_async.py train_qwen_llama_vs_rosa_v2.py tests\\test_rosa_training_snapshot.py tests\\test_train_qwen_llama_vs_rosa_v2.py`
+- `conda run -n model python -m unittest tests.test_train_qwen_llama_vs_rosa_v2 tests.test_rosa_recipes`
+- `bash -n scripts/server/common_rosa_server.sh scripts/server/launch_8gpu_ddp_online_v2.sh scripts/server/launch_8gpu_ddp_capacity_compare.sh scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh scripts/server/server_first_run_8gpu_ddp_online_v2.sh scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_compare.sh`
 - `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v1 --enable_rosa_train_state_snapshot --rosa_train_state_snapshot_interval 256 --disable_rosa_train_address_async --train_timing`
 - `conda run -n model python -m unittest tests.test_sweep_rosa_snapshot_intervals`
 - `conda run -n model python -m py_compile sweep_rosa_snapshot_intervals.py tests\\test_sweep_rosa_snapshot_intervals.py`

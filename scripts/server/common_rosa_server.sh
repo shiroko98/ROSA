@@ -42,6 +42,36 @@ rosa_print_kv() {
   printf "  %-32s %s\n" "$1" "$2"
 }
 
+rosa_recipe_tag() {
+  local raw="${1:-${ROSA_RECIPE:-custom}}"
+  raw="${raw// /_}"
+  raw="${raw//[^[:alnum:]_.-]/_}"
+  printf "%s\n" "${raw}"
+}
+
+rosa_append_csv_tag() {
+  local current="${1:-}"
+  local extra="${2:-}"
+  if [[ -z "${current}" ]]; then
+    printf "%s\n" "${extra}"
+  elif [[ -z "${extra}" ]]; then
+    printf "%s\n" "${current}"
+  else
+    printf "%s,%s\n" "${current}" "${extra}"
+  fi
+}
+
+rosa_apply_capacity_compare_defaults() {
+  local recipe_tag
+  recipe_tag="$(rosa_recipe_tag "${ROSA_RECIPE:-custom}")"
+
+  export RUN_MODELS="${RUN_MODELS:-both}"
+  export OUT_DIR="${COMPARE_OUT_DIR:-${OUT_DIR%/}_${recipe_tag}_capacity_compare}"
+  export WANDB_RUN_NAME="${COMPARE_WANDB_RUN_NAME:-${WANDB_RUN_NAME:-${recipe_tag}_capacity_compare}}"
+  export WANDB_GROUP="${COMPARE_WANDB_GROUP:-${WANDB_GROUP:-${recipe_tag}_capacity_compare}}"
+  export WANDB_TAGS="$(rosa_append_csv_tag "${WANDB_TAGS:-}" "capacity_compare,baseline_capacity_matched,${recipe_tag}")"
+}
+
 rosa_maybe_build_compiled_cpu_extension() {
   local requested_impl="${1:-compiled_cpu}"
   if [[ "${requested_impl}" != "compiled_cpu" ]]; then
@@ -134,6 +164,7 @@ rosa_print_launch_header() {
   rosa_print_kv "manifest" "${PRETOKENIZED_MANIFEST:-<auto>}"
   rosa_print_kv "output dir" "${OUT_DIR:-<unset>}"
   rosa_print_kv "recipe" "${ROSA_RECIPE:-<unset>}"
+  rosa_print_kv "run models" "${RUN_MODELS:-<unset>}"
   rosa_print_kv "online sam impl" "${ROSA_ONLINE_SAM_IMPL:-<unset>}"
   rosa_print_kv "wandb enabled" "${ENABLE_WANDB:-0}"
   rosa_print_kv "wandb mode" "${WANDB_MODE:-disabled}"

@@ -15,6 +15,7 @@
 - 当前进展：训练地址异步预取已落地，可在不持久缓存整数据集的前提下，把 `online_seq` 地址准备与 GPU 主干训练做 overlap
 - 当前进展：`online_sam` 的 sequence 快路径已落地，默认可通过 `--rosa_online_sam_impl fast` 走整段 `sam_rosa_predict`；`stateful` 保留为逐 token 回归实现
 - 当前进展：`online_v2` 配方已落地，把 `per_layer ValueStore` 正式接入在线训练主线实验入口，训练 / profile / sweep 现在都能直接通过 recipe 复用这组配置
+- 当前进展：已补 `online_v2` 的 8 卡 DDP 启动脚本与 capacity compare 启动链路，当前可以直接在服务器上一条命令跑 `online_v2`，或在同一任务里做“ROSA vs capacity-matched baseline”对照
 - 当前进展：训练期 `snapshot + 短 replay` 第一版已落地，当前可在文档级缓存稀疏 `RosaStateSnapshot`，并在 chunk 起点恢复在线状态而不必为每个 sample 复制整段地址表
 - 当前进展：训练期地址异步预取 v2 已落地，当前支持可配置 `prefetch depth`，并把后台等待 / 准备 / 队列填充率接入 training timing
 - 当前进展：`online_sam` 的编译型 CPU sequence 路径已落地，当前可通过 `--rosa_online_sam_impl compiled_cpu` 走 C++ 扩展
