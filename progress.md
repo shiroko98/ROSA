@@ -5,6 +5,7 @@
 - 已有基础：`train_qwen_llama_vs_rosa_v2.py` 中已实现 ROSA 的 `sam` 检索版本，并有基础回归测试。
 - 当前分支：`codex/online-rosa-p0-foundation`
 - 当前阶段：旧主线 P1 已收尾，准备进入在线主线重构
+- 已新增统一总清单：`final_todolist.md`，将根目录 TODO 与 `文档/` 内路线图/分析文档合并为单一入口，并同时保留“已完成追溯 + 未完成主表”
 
 ## 本轮任务
 
