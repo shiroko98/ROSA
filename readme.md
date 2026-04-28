@@ -335,8 +335,11 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
   - `scripts/server/launch_8gpu_ddp_online_v2.sh`
   - `scripts/server/server_first_run_8gpu_ddp_online_v2.sh`
 - 容量匹配 baseline 对照：
+  - `scripts/server/launch_8gpu_ddp_capacity_baseline.sh`
   - `scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v2_capacity_baseline.sh`
   - `scripts/server/server_first_run_8gpu_ddp_online_v1_equal_param_baseline.sh`
+  - `scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_baseline.sh`
 - 容量匹配 compare 入口：
   - `scripts/server/launch_8gpu_ddp_capacity_compare.sh`
   - `scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh`
@@ -406,6 +409,7 @@ bash scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh
 - 这条 compare 脚本会自动设置：
   - `RUN_MODELS=both`
   - `--baseline_capacity_match_rosa`
+- 即使 `scripts/server/server_env.sh` 里默认是 `RUN_MODELS=rosa_fused`，compare 脚本也会强制切到 `both`
 - 输出目录默认会变成：
   - `${OUT_DIR}_online_v2_capacity_compare`
 - `wandb` 默认会自动追加：
@@ -436,6 +440,14 @@ export BASELINE_WANDB_RUN_NAME=minipile_qwen_ROSA_v1_capacity_baseline
 bash scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh
 ```
 
+直接跑 `online_v2` 的容量匹配 baseline：
+
+```bash
+export PRETOKENIZED_MANIFEST=/mnt/data/Codes/RWKV/ROSA/memmap_out/dataset_manifest.json
+
+bash scripts/server/launch_8gpu_ddp_online_v2_capacity_baseline.sh
+```
+
 说明：
 
 - 该脚本会设置 `RUN_MODELS=baseline`，并额外传入 `--baseline_capacity_match_rosa`
@@ -443,6 +455,12 @@ bash scripts/server/launch_8gpu_ddp_online_v1_equal_param_baseline.sh
 - adapter 会真实改变 hidden state，并参与训练和预测
 - adapter 宽度会根据当前 ROSA 多出来的参数量自动估算；极少量无法整除的参数会以 padding 记录在 summary 里
 - 这个对照比“只补不生效的参数”更适合评估 ROSA 是否真的优于同等表达能力的主干增强
+- 如果你想对任意 recipe 直接跑 baseline，不用再单开新脚本，直接：
+
+```bash
+export ROSA_RECIPE=online_v2_sparse_sharded
+bash scripts/server/launch_8gpu_ddp_capacity_baseline.sh
+```
 
 针对当前这台服务器，推荐先在 `scripts/server/server_env.sh` 里维护这些默认值：
 
@@ -458,7 +476,7 @@ export PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu124"
 export TOKENIZER_NAME_OR_PATH="/mnt/lab/Models/qwen/Qwen3.5-9B"
 export TRAIN_DATA_PATH="/mnt/data/Datas/minipile/jsonl/train-*.jsonl"
 export VAL_DATA_PATH="/mnt/data/Datas/minipile/jsonl/validation-00000-of-00001-a2192e61a091cecb.jsonl"
-export TEST_DATA_PATH="/mnt/data/Datas/minipile/jsonl/validation-00000-of-00001-a2192e61a091cecb.jsonl"
+export TEST_DATA_PATH="/mnt/data/Datas/minipile/jsonl/test-00000-of-00001-010a6231c4b54d31.jsonl"
 export MEMMAP_OUT_DIR="/mnt/data/Codes/RWKV/ROSA/memmap_out"
 export OUT_DIR="/mnt/data/Codes/RWKV/ROSA/rosa_runs"
 ```

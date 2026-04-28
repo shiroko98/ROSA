@@ -296,13 +296,18 @@
 - 已补 `online_v2` 服务器启动与对照入口：
   - `scripts/server/launch_8gpu_ddp_online_v2.sh`
   - `scripts/server/server_first_run_8gpu_ddp_online_v2.sh`
+  - `scripts/server/launch_8gpu_ddp_capacity_baseline.sh`
+  - `scripts/server/launch_8gpu_ddp_online_v2_capacity_baseline.sh`
   - `scripts/server/launch_8gpu_ddp_capacity_compare.sh`
   - `scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh`
   - `scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_compare.sh`
 - 当前能力：
   - 可直接跑 `DDP + online_v2`
+  - 可直接按当前 `ROSA_RECIPE` 跑单独的 capacity-matched baseline
   - 可直接在同一任务里跑 `run_models=both + --baseline_capacity_match_rosa`
   - compare 脚本会自动按当前 `ROSA_RECIPE` 推导输出目录、wandb run/group/tag，减少手工改名
+  - compare 脚本现已强制覆盖 `RUN_MODELS=both`，不再被 `server_env.sh` 里的 `RUN_MODELS=rosa_fused` 默认值吞掉
+  - `server_env.sh` 默认 `TEST_DATA_PATH` 已改回真正的 `test` split，避免 `test` 指标和 `val` 重复
 - 当前自检结果补充：
   - `tests/test_train_qwen_llama_vs_rosa_v2.py` 已新增 `online_v2` 容量匹配参数量回归
   - 已验证 `CapacityMatchedBaseLM` 可与 `online_v2` 的额外参数量严格对齐
@@ -344,6 +349,9 @@
 - `conda run -n model python -m py_compile rosa_addressing.py rosa_training_snapshot.py rosa_train_async.py train_qwen_llama_vs_rosa_v2.py tests\\test_rosa_training_snapshot.py tests\\test_train_qwen_llama_vs_rosa_v2.py`
 - `conda run -n model python -m unittest tests.test_train_qwen_llama_vs_rosa_v2 tests.test_rosa_recipes`
 - `bash -n scripts/server/common_rosa_server.sh scripts/server/launch_8gpu_ddp_online_v2.sh scripts/server/launch_8gpu_ddp_capacity_compare.sh scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh scripts/server/server_first_run_8gpu_ddp_online_v2.sh scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_compare.sh`
+- `bash -n scripts/server/common_rosa_server.sh scripts/server/server_env.sh scripts/server/launch_8gpu_ddp_capacity_baseline.sh scripts/server/launch_8gpu_ddp_online_v2_capacity_baseline.sh scripts/server/server_first_run_8gpu_ddp_online_v2_capacity_baseline.sh scripts/server/launch_8gpu_ddp_capacity_compare.sh scripts/server/launch_8gpu_ddp_online_v2_capacity_compare.sh`
+- `@' ... rosa_apply_capacity_baseline_defaults ... '@ | bash`
+- `@' ... rosa_apply_capacity_compare_defaults ... '@ | bash`
 - `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v1 --enable_rosa_train_state_snapshot --rosa_train_state_snapshot_interval 256 --disable_rosa_train_address_async --train_timing`
 - `conda run -n model python -m unittest tests.test_sweep_rosa_snapshot_intervals`
 - `conda run -n model python -m py_compile sweep_rosa_snapshot_intervals.py tests\\test_sweep_rosa_snapshot_intervals.py`

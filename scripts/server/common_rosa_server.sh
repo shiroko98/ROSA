@@ -61,14 +61,27 @@ rosa_append_csv_tag() {
   fi
 }
 
+rosa_apply_capacity_baseline_defaults() {
+  local recipe_tag
+  recipe_tag="$(rosa_recipe_tag "${ROSA_RECIPE:-custom}")"
+
+  export RUN_MODELS="baseline"
+  export OUT_DIR="${BASELINE_OUT_DIR:-${OUT_DIR%/}_${recipe_tag}_capacity_baseline}"
+  export WANDB_RUN_NAME="${BASELINE_WANDB_RUN_NAME:-${recipe_tag}_capacity_baseline}"
+  export WANDB_GROUP="${BASELINE_WANDB_GROUP:-${recipe_tag}_capacity_baseline}"
+  export WANDB_TAGS="$(rosa_append_csv_tag "${WANDB_TAGS:-}" "baseline,capacity_matched,${recipe_tag}")"
+}
+
 rosa_apply_capacity_compare_defaults() {
   local recipe_tag
   recipe_tag="$(rosa_recipe_tag "${ROSA_RECIPE:-custom}")"
 
-  export RUN_MODELS="${RUN_MODELS:-both}"
+  # Compare mode should always execute both branches even if server_env.sh
+  # provides a single-model default such as `rosa_fused`.
+  export RUN_MODELS="both"
   export OUT_DIR="${COMPARE_OUT_DIR:-${OUT_DIR%/}_${recipe_tag}_capacity_compare}"
-  export WANDB_RUN_NAME="${COMPARE_WANDB_RUN_NAME:-${WANDB_RUN_NAME:-${recipe_tag}_capacity_compare}}"
-  export WANDB_GROUP="${COMPARE_WANDB_GROUP:-${WANDB_GROUP:-${recipe_tag}_capacity_compare}}"
+  export WANDB_RUN_NAME="${COMPARE_WANDB_RUN_NAME:-${recipe_tag}_capacity_compare}"
+  export WANDB_GROUP="${COMPARE_WANDB_GROUP:-${recipe_tag}_capacity_compare}"
   export WANDB_TAGS="$(rosa_append_csv_tag "${WANDB_TAGS:-}" "capacity_compare,baseline_capacity_matched,${recipe_tag}")"
 }
 
