@@ -8,7 +8,7 @@
 ```bash
 --rosa_position post_norm --rosa_output_norm rms_match \
 --rosa_scale_mode logit_gap --rosa_dynamic_max 0.2 \
---rosa_dynamic_margin 0.5 --rosa_dynamic_min_match 4 --rosa_dynamic_chunk 128
+--rosa_dynamic_margin 0.5 --rosa_dynamic_min_match 6 --rosa_dynamic_chunk 128
 ```
 
 本次没有改生产启动脚本、重启/切换长训练、重写旧 checkpoint 或原始数据。
@@ -81,3 +81,5 @@ fixed旧模式仍保留首更新的严格检查。
 
 当前新实验默认动态上限已改为0.2；上文历史短跑仍为0.5，不改写历史结果。
 已有checkpoint显式保存的上限不变；改变上限不能冒充完全一致的续训。
+
+当前新实验默认最小匹配长度已改为6 token；历史短跑仍为4，不改写旧记录。

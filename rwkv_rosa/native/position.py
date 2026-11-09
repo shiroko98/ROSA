@@ -3,16 +3,18 @@ from __future__ import annotations
 
 import math
 
-SCALE_DEFAULTS = {'scale_mode': 'fixed', 'dynamic_max': .2, 'dynamic_margin': .5, 'dynamic_chunk': 128, 'dynamic_min_match': 4}
+SCALE_DEFAULTS = {'scale_mode': 'fixed', 'dynamic_max': .2, 'dynamic_margin': .5, 'dynamic_chunk': 128, 'dynamic_min_match': 6}
 
 
 def scale_options(metadata):
     options = {name: metadata.get(name, default) for name, default in SCALE_DEFAULTS.items()}
-    # Old dynamic snapshots could omit the cap and historically used 0.5.
-    # New runs always serialize their explicit 0.2 default; do not reinterpret
-    # a historical weights-only snapshot when updating the CLI default.
+    # Historical dynamic snapshots could omit the cap/minimum and used 0.5/4.
+    # New runs serialize explicit settings; do not reinterpret old snapshots
+    # when changing the CLI defaults to 0.2/6.
     if options['scale_mode'] == 'logit_gap' and 'dynamic_max' not in metadata:
         options['dynamic_max'] = .5
+    if options['scale_mode'] == 'logit_gap' and 'dynamic_min_match' not in metadata:
+        options['dynamic_min_match'] = 4
     return options
 
 

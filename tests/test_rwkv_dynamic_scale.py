@@ -36,14 +36,18 @@ class DynamicScaleTest(unittest.TestCase):
         from rwkv_rosa.native.position import scale_options_from_args
         parser=argparse.ArgumentParser();add_arguments(parser)
         self.assertEqual(parser.parse_args([]).rosa_dynamic_max,.2)
+        self.assertEqual(parser.parse_args([]).rosa_dynamic_min_match,6)
         self.assertEqual(scale_options_from_args(SimpleNamespace())['dynamic_max'],.2)
         embedding=nn.Embedding(8,2).requires_grad_(False)
         branch=CPUImprovedROSA(embedding,position='post_norm',output_norm='rms_match',scale_mode='logit_gap')
         self.assertEqual(branch.scale_options['dynamic_max'],.2)
+        self.assertEqual(branch.scale_options['dynamic_min_match'],6)
         gain,_=self.scales(torch.tensor([[[2.,0.]]]),torch.tensor([[[0.,2.]]]),torch.tensor([[1]]))
         self.assertAlmostEqual(float(gain),.2,places=6)
         legacy={'position':'post_norm','output_norm':'rms','scale_mode':'logit_gap'}
         self.assertEqual(normalize_metadata(legacy)['dynamic_max'],.5)
+        self.assertEqual(normalize_metadata(legacy)['dynamic_min_match'],4)
+        self.assertEqual(normalize_metadata({**legacy,'dynamic_min_match':6})['dynamic_min_match'],6)
         self.assertEqual(normalize_metadata({**legacy,'dynamic_max':.2})['dynamic_max'],.2)
         self.assertEqual(normalize_metadata({**legacy,'dynamic_max':.5})['dynamic_max'],.5)
 
@@ -135,6 +139,22 @@ class DynamicScaleTest(unittest.TestCase):
         torch.testing.assert_close(y, x.float(), atol=0, rtol=0)
         self.assertEqual(branch.stats['rosa_dynamic_eligible_fraction'], 0.)
         self.assertEqual(branch.stats['rosa_dynamic_scale_max'], 0.)
+
+    def test_default_min_match_boundary_five_is_blocked_six_is_eligible(self):
+        embedding=nn.Embedding(8,2).requires_grad_(False)
+        with torch.no_grad():embedding.weight.copy_(torch.tensor([[0.,1.]]*8))
+        branch=CPUImprovedROSA(embedding,position='post_norm',output_norm='rms_match',scale_mode='logit_gap')
+        branch.bind_output_head(self.head)
+        branch.begin(torch.tensor([[1,2,1,2]]))
+        branch.addresses.valid_mask.fill_(True)
+        branch.addresses.addr_ids.fill_(1)
+        branch.addresses.fired_match_lens.copy_(torch.tensor([[5,6,5,6]]))
+        x=torch.tensor([[[2.,0.]]*4]).bfloat16()
+        y=branch.inject_post_norm(x)
+        torch.testing.assert_close(y[:,[0,2]],x[:,[0,2]].float(),atol=0,rtol=0)
+        self.assertGreater(float((y[:,[1,3]]-x[:,[1,3]].float()).abs().max()),0.)
+        self.assertEqual(branch.stats['rosa_dynamic_eligible_fraction'],.5)
+        self.assertLessEqual(branch.stats['rosa_dynamic_scale_max'],.2)
 
     def test_validation_metadata_and_resume_reject_semantic_changes(self):
         parser = argparse.ArgumentParser()

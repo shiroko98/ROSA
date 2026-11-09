@@ -7,7 +7,7 @@
 ```bash
 --rosa_position post_norm --rosa_output_norm rms \
 --rosa_scale_mode logit_gap --rosa_dynamic_max 0.2 \
---rosa_dynamic_margin 0.5 --rosa_dynamic_chunk 128 --rosa_dynamic_min_match 4
+--rosa_dynamic_margin 0.5 --rosa_dynamic_chunk 128 --rosa_dynamic_min_match 6
 ```
 
 默认仍为 `--rosa_scale_mode fixed`，保持旧训练及自动续训的公式不变。
@@ -26,7 +26,7 @@
   `a = clamp(max(gap,0) / improvement, 0, dynamic_max)`；否则 a=0。
 - 最终 residual = a * learned_gate * u，再按地址 valid_mask 过滤。
 
-原始匹配长度不足4（可配置）的地址不做动态放大；这是保守筛选，不是正确性概率。
+原始匹配长度不足6（可配置）的地址不做动态放大；这是保守筛选，不是正确性概率。
 控制器只看当前特征、检索候选、base 输出和修正方向，**不读取训练标签**。
 控制器计算 no_grad/detach，避免通过分母反向学习出奇异放大；方向与 gate 仍接受
 普通交叉熵梯度。候选已足够领先时增益为0；无效地址/错误方向不做动态注入。
@@ -82,3 +82,5 @@ ChatML保留token与base不兼容的问题。本补丁不修改该数据问题�
 
 当前新实验默认动态上限已改为0.2；上文历史短跑仍为0.5，不改写历史结果。
 已有checkpoint显式保存的上限不变；改变上限不能冒充完全一致的续训。
+
+当前新实验默认最小匹配长度已改为6 token；历史短跑仍为4，不改写旧记录。

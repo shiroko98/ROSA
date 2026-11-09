@@ -36,7 +36,7 @@ def add_arguments(parser):
     parser.add_argument('--rosa_dynamic_max', type=float, default=.2)
     parser.add_argument('--rosa_dynamic_margin', type=float, default=.5)
     parser.add_argument('--rosa_dynamic_chunk', type=int, default=128)
-    parser.add_argument('--rosa_dynamic_min_match', type=int, default=4)
+    parser.add_argument('--rosa_dynamic_min_match', type=int, default=6)
     parser.add_argument('--rosa_eval_initial', type=int, choices=(0,1), default=0)
     parser.add_argument('--rosa_needle_every_eval', type=int, choices=(0,1), default=0)
     parser.add_argument('--rosa_needle_length', type=int, default=8192)

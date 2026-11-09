@@ -15,7 +15,7 @@ from .position import resolve_position, validate_output_norm, validate_scale_opt
 
 class CPUImprovedROSA(nn.Module):
     def __init__(self, embedding, layers=None, scale=.05, device="cpu", address_impl="fast", position="block", output_norm="none",
-                 scale_mode="fixed", dynamic_max=.2, dynamic_margin=.5, dynamic_chunk=128, dynamic_min_match=4):
+                 scale_mode="fixed", dynamic_max=.2, dynamic_margin=.5, dynamic_chunk=128, dynamic_min_match=6):
         super().__init__()
         vocab, dim = embedding.weight.shape
         self.execution_device = torch.device(device)
