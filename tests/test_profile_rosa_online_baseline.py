@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+
+import torch
 from pathlib import Path
 
 import profile_rosa_online_baseline as profile_mod
@@ -12,7 +14,7 @@ class ProfileRosaOnlineBaselineSmokeTests(unittest.TestCase):
             args = parser.parse_args(
                 [
                     "--data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--data_format",
                     "text",
                     "--split_mode",
@@ -74,13 +76,22 @@ class ProfileRosaOnlineBaselineSmokeTests(unittest.TestCase):
             self.assertTrue(report["hot_cache"]["enabled"])
             self.assertGreater(report["hot_cache"]["prefill"]["token_requests"], 0.0)
 
+    def test_padding_metadata_is_ignored_but_real_token_mismatch_is_not(self):
+        left = {"raw": torch.tensor([[2, 0, 0]])}
+        right = {"raw": torch.tensor([[2, 1, 2]])}
+        valid = torch.tensor([[True, False, False]])
+        self.assertEqual(profile_mod.compare_tensor_dicts(left, right)["all_equal"], 0)
+        self.assertEqual(profile_mod.compare_tensor_dicts(left, right, mask=valid)["all_equal"], 1)
+        right["raw"][0, 0] = 3
+        self.assertEqual(profile_mod.compare_tensor_dicts(left, right, mask=valid)["all_equal"], 0)
+
     def test_profile_accepts_online_v2_recipe(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             parser = profile_mod.build_arg_parser()
             args = parser.parse_args(
                 [
                     "--data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--rosa_recipe",
                     "online_v2",
                     "--data_format",

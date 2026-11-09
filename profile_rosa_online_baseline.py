@@ -110,7 +110,11 @@ def average_metric(rows: Sequence[Dict[str, float]], key: str) -> float:
     return sum(float(row.get(key, 0.0)) for row in rows) / len(rows)
 
 
-def compare_tensor_dicts(left: Dict[str, torch.Tensor], right: Dict[str, torch.Tensor]) -> Dict[str, float]:
+def compare_tensor_dicts(left: Dict[str, torch.Tensor], right: Dict[str, torch.Tensor], *,
+                         mask: Optional[torch.Tensor] = None) -> Dict[str, float]:
+    if mask is not None:
+        left = {key: value[mask] for key, value in left.items()}
+        right = {key: value[mask] for key, value in right.items()}
     out: Dict[str, float] = {}
     for key in left.keys():
         if key not in right:
@@ -389,7 +393,10 @@ def run_train_path_consistency_profile(
 
         reference_dict = address_batch_to_dict(reference_address)
         online_dict = address_batch_to_dict(online_address)
-        address_cmp_rows.append(compare_tensor_dicts(reference_dict, online_dict))
+        # Padding is not a real token. Online replay can produce raw matches
+        # on repeated PADs while reference tables zero-fill them; compare
+        # semantic metadata only at actual input positions.
+        address_cmp_rows.append(compare_tensor_dicts(reference_dict, online_dict, mask=input_ids.ne(tokenizer.pad_token_id)))
         coverage_rows.append(summarize_address_tensors(reference_dict))
         online_stats_rows.append(extract_scalar_rosa_stats(online_out))
         reference_stats_rows.append(extract_scalar_rosa_stats(reference_out))

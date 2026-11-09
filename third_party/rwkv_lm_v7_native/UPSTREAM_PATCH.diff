@@ -1,0 +1,201 @@
+--- a/cuda/rwkv7_cmix_bf16_v5.cu
++++ b/cuda/rwkv7_cmix_bf16_v5.cu
+@@ -18,7 +18,13 @@
+ }
+ 
+ __device__ inline void atomic_add_float2(float* ptr, float x0, float x1) {
++#if __CUDA_ARCH__ >= 900
+     atomicAdd(reinterpret_cast<float2*>(ptr), make_float2(x0, x1));
++#else
++    // Vector atomics require Hopper; Ada uses equivalent per-element atomics.
++    atomicAdd(ptr, x0);
++    atomicAdd(ptr + 1, x1);
++#endif
+ }
+ 
+ inline int64_t ceil_div(int64_t n, int64_t d) {
+--- a/cuda/rwkv7_tmix_kk_pre_bf16_v5.cu
++++ b/cuda/rwkv7_tmix_kk_pre_bf16_v5.cu
+@@ -33,7 +33,13 @@
+ }
+ 
+ __device__ inline void atomic_add_float2(float* ptr, float x0, float x1) {
++#if __CUDA_ARCH__ >= 900
+     atomicAdd(reinterpret_cast<float2*>(ptr), make_float2(x0, x1));
++#else
++    // Vector atomics require Hopper; Ada uses equivalent per-element atomics.
++    atomicAdd(ptr, x0);
++    atomicAdd(ptr + 1, x1);
++#endif
+ }
+ 
+ inline int64_t ceil_div(int64_t n, int64_t d) {
+--- a/cuda/rwkv7_tmix_mix6_bf16_v5.cu
++++ b/cuda/rwkv7_tmix_mix6_bf16_v5.cu
+@@ -17,7 +17,13 @@
+ }
+ 
+ __device__ inline void atomic_add_float2(float* ptr, float x0, float x1) {
++#if __CUDA_ARCH__ >= 900
+     atomicAdd(reinterpret_cast<float2*>(ptr), make_float2(x0, x1));
++#else
++    // Vector atomics require Hopper; Ada uses equivalent per-element atomics.
++    atomicAdd(ptr, x0);
++    atomicAdd(ptr + 1, x1);
++#endif
+ }
+ 
+ inline int64_t ceil_div(int64_t n, int64_t d) {
+--- a/src/dataset.py
++++ b/src/dataset.py
+@@ -181,8 +181,12 @@
+         data_type = getattr(self, "data_type", getattr(args, "data_type", "binidx"))
+         if data_type == "sft_binidx":
+             doc_index = self._sft_doc_index_from_sample(sample_index, epoch, epoch_sample_index)
+-            token_ids = self.data[doc_index].astype(int)
+-            loss_mask = self.mask_data[doc_index].astype(int)
++            if hasattr(self, 'rosa_physical_indices'):
++                from rwkv_rosa.native.windowed_data import read_window
++                token_ids, loss_mask = read_window(self, doc_index)
++            else:
++                token_ids = self.data[doc_index].astype(int)
++                loss_mask = self.mask_data[doc_index].astype(int)
+             if not np.isin(loss_mask, [0, 1]).all():
+                 raise ValueError(f"SFT loss mask contains values other than 0/1 in document {doc_index}.")
+ 
+--- a/src/model.py
++++ b/src/model.py
+@@ -923,13 +923,28 @@
+         x = self.emb(idx)
+ 
+         v_first = torch.empty_like(x)
+-        for block in self.blocks:
+-            if args.grad_cp == 1 and self.training:
+-                x, v_first = deepspeed.checkpointing.checkpoint(block, x, v_first)
++        if hasattr(self, 'rosa_cpu'):
++            self.rosa_cpu.begin(idx)
++        for layer, block in enumerate(self.blocks):
++            if hasattr(self, 'rosa_cpu'):
++                # Inject OUTSIDE checkpoint: frozen embeddings have no gradient,
++                # but checkpoint inputs need ROSA's differentiable residual.
++                x = self.rosa_cpu.inject(layer, x)
++            skip_checkpoint = hasattr(self, 'rosa_cpu') and layer in getattr(args, 'rosa_no_checkpoint_layers', ())
++            needs_input_grad = not hasattr(self, 'rosa_cpu') or x.requires_grad or v_first.requires_grad
++            if args.grad_cp == 1 and self.training and not skip_checkpoint and needs_input_grad:
++                if hasattr(self, 'rosa_cpu'):
++                    from torch.utils.checkpoint import checkpoint
++                    x, v_first = checkpoint(block, x, v_first, use_reentrant=True)
++                else:
++                    x, v_first = deepspeed.checkpointing.checkpoint(block, x, v_first)
+             else:
+                 x, v_first = block(x, v_first)
+ 
+         x = self.ln_out(x)
++        if hasattr(self, 'rosa_cpu'):
++            # Explicit output branch: AFTER final norm, no subsequent RWKV block.
++            x = self.rosa_cpu.inject_post_norm(x)
+         return x
+ 
+     def _head_weight_context(self, gather_head=False):
+@@ -967,7 +982,9 @@
+             with self._head_weight_context(gather_head):
+                 return head_masked_cross_entropy_cuda(
+                     hidden,
+-                    self.head.weight,
++                    # Normalized post_norm ROSA keeps its output in FP32. Cast
++                    # only the head view, preserving frozen BF16 base bytes.
++                    self.head.weight.to(dtype=hidden.dtype),
+                     targets,
+                     loss_mask,
+                     sft_masked_fused_ce_chunk,
+--- a/src/trainer.py
++++ b/src/trainer.py
+@@ -62,6 +62,11 @@
+ 
+ 
+ def save_train_checkpoint(args, trainer, pl_module, file_name):
++    if getattr(args, 'rosa_cpu', 0) and (not getattr(args, 'rosa_save', 1)
++            or getattr(args, 'rosa_checkpoint_adapter_only', 0)):
++        # The ROSA callback owns verified adapter+optimizer+loop persistence.
++        # Do not also serialize the immutable 3B body at epoch end / early stop.
++        return
+     progress_snapshot = mark_current_batch_completed_for_checkpoint(trainer)
+     try:
+         my_save(
+@@ -208,6 +213,9 @@
+ 
+ 
+ def get_current_global_grad_norm(trainer, pl_module):
++    if hasattr(pl_module, 'rosa_cpu'):
++        from rwkv_rosa.native.adapter import gradient_norm
++        return gradient_norm(pl_module.rosa_cpu.parameters())
+     deepspeed_gradients = _iter_deepspeed_gradient_tensors(trainer)
+     if deepspeed_gradients:
+         return _compute_gradient_tensor_global_norm(deepspeed_gradients, shard_across_ranks=True)
+@@ -223,6 +231,9 @@
+ 
+ 
+ def get_global_grad_norm(trainer, pl_module):
++    if hasattr(pl_module, 'rosa_cpu'):
++        from rwkv_rosa.native.adapter import gradient_norm
++        return gradient_norm(pl_module.rosa_cpu.parameters())
+     strategy = getattr(trainer, "strategy", None)
+     strategy_model = _get_strategy_model(trainer)
+     for owner in (strategy_model, getattr(pl_module, "model", None), pl_module):
+@@ -372,6 +383,7 @@
+                 project=args.wandb,
+                 name=args.run_name + " " + args.my_timestamp,
+                 config=args,
++                allow_val_change=bool(getattr(args, "rosa_resume", "")),
+                 save_code=False,
+             )
+             trainer.my_wandb = wandb
+@@ -627,6 +639,10 @@
+                     step=int(real_step),
+                 )
+ 
++        if getattr(args, 'rosa_needle_every_eval', 0):
++            from rwkv_rosa.native.periodic_needle import run_native_needle_eval
++            run_native_needle_eval(trainer, pl_module, args, int(real_step))
++
+     def on_train_epoch_start(self, trainer, pl_module):
+         args = self.args
+         dataset = trainer.train_dataloader.dataset.datasets
+--- a/train.py
++++ b/train.py
+@@ -291,6 +291,8 @@
+     rank_zero_info("########## work in progress ##########")
+ 
+     parser = ArgumentParser()
++    from rwkv_rosa.native.integration import add_arguments, install
++    add_arguments(parser)
+ 
+     parser.add_argument("--load_model", default="", type=str)  # full path, with .pth
+     parser.add_argument("--wandb", default="", type=str)  # wandb project name. if "" then don't use wandb
+@@ -591,10 +593,11 @@
+     from src.trainer import train_callback, generate_init_weight
+     from src.dataset import MyDataset
+ 
+-    train_data = MyDataset(args, sft_split="train")
++    from rwkv_rosa.native.windowed_data import configure_windowed_dataset
++    train_data = configure_windowed_dataset(MyDataset(args, sft_split="train"))
+     eval_loader = None
+     if args.data_type == "sft_binidx" and args.sft_eval_every_n_steps > 0:
+-        eval_data = MyDataset(args, sft_split="eval")
++        eval_data = configure_windowed_dataset(MyDataset(args, sft_split="eval"))
+         eval_loader = DataLoader(
+             eval_data,
+             shuffle=False,
+@@ -671,9 +674,11 @@
+                         load_dict[k] = model.state_dict()[k]
+             model.load_state_dict(load_dict)
+ 
++    # ROSA extension only: keep the native Trainer, dataset, SFT loss and kernels.
++    rosa_callback = install(model, args)
+     trainer = Trainer.from_argparse_args(
+         args,
+-        callbacks=[train_callback(args, eval_loader=eval_loader)],
++        callbacks=[train_callback(args, eval_loader=eval_loader)] + ([rosa_callback] if rosa_callback else []),
+     )
+ 
+     if trainer.global_rank == 0:

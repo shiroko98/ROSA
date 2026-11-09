@@ -2,6 +2,7 @@
 source = .
 omit =
     tests/*
+    third_party/*
     .codex-build/*
     .tmp/*
     outputs/*

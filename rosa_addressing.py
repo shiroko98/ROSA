@@ -320,27 +320,18 @@ def pack_address_meta_batch(
     bsz = len(batch_meta)
     seqlen = max((len(row) for row in batch_meta), default=0)
 
-    addr_ids = torch.full((bsz, seqlen), -1, dtype=torch.long, device=device)
-    raw_match_lens = torch.zeros((bsz, seqlen), dtype=torch.long, device=device)
-    fired_match_lens = torch.zeros((bsz, seqlen), dtype=torch.long, device=device)
-    valid_mask = torch.zeros((bsz, seqlen), dtype=torch.bool, device=device)
-    special_mask = torch.zeros((bsz, seqlen), dtype=torch.bool, device=device)
-
-    for b, row in enumerate(batch_meta):
-        for i, meta in enumerate(row):
-            addr_ids[b, i] = meta.addr_id
-            raw_match_lens[b, i] = meta.raw_match_len
-            fired_match_lens[b, i] = meta.fired_match_len
-            valid_mask[b, i] = meta.valid_mask
-            special_mask[b, i] = meta.special_mask
-
-    return {
-        "addr_ids": addr_ids,
-        "raw_match_lens": raw_match_lens,
-        "fired_match_lens": fired_match_lens,
-        "valid_mask": valid_mask,
-        "special_mask": special_mask,
-    }
+    # Construct each tensor in bulk. Five scalar tensor writes per token cost
+    # seconds at 128K even after SAM itself is fast (and launch tiny GPU ops
+    # when device is CUDA). Preserve ragged-row defaults and empty shapes.
+    fields = (("addr_ids", "addr_id", -1, torch.long),
+              ("raw_match_lens", "raw_match_len", 0, torch.long),
+              ("fired_match_lens", "fired_match_len", 0, torch.long),
+              ("valid_mask", "valid_mask", False, torch.bool),
+              ("special_mask", "special_mask", False, torch.bool))
+    return {key: torch.tensor(
+                [[getattr(meta, attr) for meta in row] + [default] * (seqlen-len(row))
+                 for row in batch_meta], dtype=dtype, device=device).reshape(bsz, seqlen)
+            for key, attr, default, dtype in fields}
 
 
 def make_rosa_address_batch(addressed: Dict[str, torch.Tensor], *, source: str = "unknown") -> RosaAddressBatch:

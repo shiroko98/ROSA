@@ -14,6 +14,7 @@ import torch
 EXTENSION_NAME = "rosa_sam_cpu_ext"
 ROOT = Path(__file__).resolve().parent
 SETUP_PATH = ROOT / "build_rosa_sam_cpu_extension.py"
+SOURCE_PATH = ROOT / "cpp_extensions" / "rosa_sam_cpu_extension.cpp"
 BUILD_ROOT = ROOT / "outputs" / "cpp_extensions" / EXTENSION_NAME
 BUILD_LIB = BUILD_ROOT / "lib"
 BUILD_TEMP = BUILD_ROOT / "temp"
@@ -42,7 +43,8 @@ def build_rosa_sam_cpu_extension(*, verbose: bool = False, force_rebuild: bool =
     BUILD_LIB.mkdir(parents=True, exist_ok=True)
     BUILD_TEMP.mkdir(parents=True, exist_ok=True)
     binary_path = _extension_binary_path()
-    if binary_path.exists() and not force_rebuild:
+    if binary_path.exists() and not force_rebuild and binary_path.stat().st_mtime_ns >= max(
+            SOURCE_PATH.stat().st_mtime_ns, SETUP_PATH.stat().st_mtime_ns):
         return binary_path
 
     cmd = [
@@ -54,6 +56,8 @@ def build_rosa_sam_cpu_extension(*, verbose: bool = False, force_rebuild: bool =
         "--build-temp",
         str(BUILD_TEMP),
     ]
+    if force_rebuild:
+        cmd.append("--force")
     subprocess.run(
         cmd,
         check=True,

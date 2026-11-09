@@ -1,8 +1,8 @@
 # ROSA：在线检索记忆与语言模型融合
 
-本仓库实现纯 ROSA 非参数预测，以及将 ROSA 检索结果注入 Qwen/LLaMA 风格 Transformer 的训练与评测流程。重点包括在线后缀自动机（SAM）、可训练记忆融合和训练性能优化。
+本仓库实现纯 ROSA 非参数预测，以及将 ROSA 检索结果注入 Qwen/LLaMA 风格 Transformer 和 RWKV-7 的训练与评测流程。重点包括在线后缀自动机（SAM）、可训练记忆融合和训练性能优化。
 
-**当前对照实验是 Transformer vs Transformer + ROSA，不是 RWKV vs RWKV + ROSA。**模型在本仓库中从头训练；使用 Qwen tokenizer 不代表加载了 Qwen 预训练模型。`train_pure_rosa_rwkv_baseline.py` 使用 RWKV tokenizer，其 baseline 是 bigram，不是 RWKV 神经网络。
+**原有实验是 Transformer vs Transformer + ROSA**，使用自建主干从头训练；Qwen tokenizer 不代表 Qwen 预训练权重。**本分支新增真实 RWKV-7 的 baseline / 原版 ROSA 最小融合 / 新版 ROSA 对照训练**，支持严格加载 RWKV `.pth`；详见 [RWKV 实验指南](docs/rwkv_rosa_comparison.md)。`train_pure_rosa_rwkv_baseline.py` 仍只是 tokenizer + 纯 ROSA/bigram 评测，不是新 RWKV 神经模型入口。
 
 ## 功能
 
@@ -24,6 +24,38 @@ python -m pip install -r requirements-dev.txt
 
 GPU 环境请先安装与设备匹配的 PyTorch，再安装其余依赖。服务器安装与多卡入口见 [运行指南](docs/usage.md) 和 [服务器配置示例](env/server.local.sh.example)。C++ CPU 扩展需要本机编译工具，默认示例不依赖它。
 
+## RWKV-7 原生 SFT 训练（当前推荐入口）
+
+按用户指定的 `TimeMobius/RWKV-LM-V7/new_sft` 原生 `train.py`、Lightning Trainer、SFT loader/loss 和融合 CUDA 内核训练；默认 base 已改为用户的 `rwkv7-g1d-0.1b-20260129-ctx8192.pth`。冻结本体，只更新新版 ROSA，支持 `--rosa_device cuda` / `cpu`。真实 1K/8K/50K 各两组、每组 10 步已完成，GPU ROSA 在该硬件上快约 1.33× / 1.51× / 1.90×；SAM 寻址两组均在 CPU，非质量优劣结论。完整配置、结果、W&B 状态及命令见 [原生 SFT 指南](docs/rwkv_native_sft.md)。
+
+旧 `train_rwkv_rosa_compare.py` 与后续参考版长度探测仍保留作正确性/历史实验，不作为原生内核性能依据。
+
+### 当前 ROSA 扩展与验证边界
+
+- 明确区分 block 注入与 `post_norm`（最终 norm 后、head 前），checkpoint 保存并校验位置语义。见 [post-norm 说明](docs/rwkv_post_norm_training.md)。
+- 支持独立 GPU 大海捞针评测、RWKV state 和编译 SAM 增量更新；10 条三格式/模型配置快速对比已完成，未观察到旧 step 200 ROSA 相对 base 的提升。见 [stateful 实现与实测](docs/rwkv_gpu_stateful_needle.md)。
+- 新增可选的输出归一化、投影后 RMS 对齐及有界 `logit_gap` 动态 scale；默认旧公式不变。这些功能已经过数值和短跑验证，**不代表已证明质量提升**。见 [动态 scale](docs/rwkv_dynamic_scale.md)、[输出对齐](docs/rwkv_output_alignment.md)。
+- 当前 ROSA 原生训练路径仍限制单卡；上游具有 DeepSpeed 接口不等于本分支已适配 ROSA 多卡或 ZeRO-3 offload。CPU ROSA 执行也不等同于 ZeRO offload。
+
+## RWKV-7 对照实验（新增）
+
+```bash
+bash scripts/setup_rwkv_rosa_env.sh
+bash scripts/run_rwkv_rosa_compare.sh configs/rwkv_rosa/toy.json
+```
+
+指定 RWKV-7 2.9B 权重的 GPU FP32 正确性冒烟配置：
+
+```bash
+bash scripts/run_rwkv_rosa_compare.sh configs/rwkv_rosa/rwkv7_2_9b_fp32_smoke.json
+```
+
+**精度边界：**参考运行时的 BF16 扩大审计观察到分段 top-1 翻转，已修复一处 WKV autocast 边界问题，但整体 BF16 等价仍无保证，因此参考版准确性对照默认 FP32。原生 SFT 则使用 BF16 本体和 FP32 ROSA；增量解码与整段前向的数值差异单独记录，不承诺逐位一致。见 [数值复查](docs/rwkv_bf16_audit.md)。
+
+**冻结本体 + CPU ROSA：**新增 `--freeze-backbone --rosa-device cpu --variants improved`，仅训练 CPU 上的新版 ROSA；支持读取打包 SFT binidx，并提供完整反向传播的实测长度探测入口 `python -m rwkv_rosa.length_probe`。设备放置、真实预检结果及长上下文限制见 [CPU ROSA 训练说明](docs/rwkv_cpu_rosa_training.md)。
+
+正式数据、相同历史范围、原版/新版定义、训练范围与恢复方法见 [RWKV 实验指南](docs/rwkv_rosa_comparison.md)。上游参考递归是可微 PyTorch 实现，并非其融合 CUDA 内核的性能替代。
+
 ## 离线快速验证
 
 在仓库根目录执行以下命令（写成一行以兼容 Bash 和 PowerShell）：
@@ -44,7 +76,9 @@ python train_pure_rosa_baseline.py --toy repeat --mode online --out_dir outputs/
 
 | 路径 | 用途 |
 | --- | --- |
-| `train_qwen_llama_vs_rosa_v2.py` | 当前主训练入口 |
+| `train_rwkv_rosa_compare.py`、`rwkv_rosa/` | 新增 RWKV-7 + 原版/新版 ROSA 对照训练 |
+| `third_party/rwkv_lm_v7/` | 固定版本的上游 RWKV 参考主干、SFT 模板和 mask；保留许可证 |
+| `train_qwen_llama_vs_rosa_v2.py` | 原有 Transformer 主训练入口 |
 | `train_qwen_llama_vs_rosa.py` | 保留的早期 Transformer 对照入口 |
 | `train_pure_rosa*_baseline.py` | 纯 ROSA 与 byte/RWKV tokenizer 实验 |
 | `rosa_addressing.py`、`rosa_session.py` | 在线地址和状态生命周期 |
@@ -77,7 +111,7 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
 
 ## 测试与覆盖率
 
-最近一次本地验证：134 项测试通过，Python 总行覆盖率 95.96%。范围与环境边界见 [验证记录](docs/testing.md)。GitHub Actions 已配置 Ubuntu / Windows 回归，push 后运行。
+最近一次提交前 CPU-only 回归：262 项测试执行，256 项通过、6 项跳过，无失败。当前 Python 行覆盖率 **91.60%，尚未达到 CI 的 95% 门槛**；未降低阈值或排除新增自写 GPU 模块。历史记录及当前验证范围见 [验证记录](docs/testing.md)。GitHub Actions 已配置 Ubuntu / Windows 回归，push 后运行；本地通过不代表远程 CI 或多卡验证已完成。
 
 ```bash
 python -m unittest discover -s tests
@@ -85,7 +119,7 @@ python -m coverage run -m unittest discover -s tests
 python -m coverage report
 ```
 
-测试使用临时目录、离线 byte tokenizer 或 tokenizer 替身。覆盖率统计 Python 模块及命令行入口；原生 C++ 和 `build_rosa_sam_cpu_extension.py` 构建配置不计入 Python 行覆盖率。真实多卡通信、CUDA 性能和编译器支持需要在对应环境另行验证。
+测试使用临时目录、离线 byte tokenizer 或 tokenizer 替身。覆盖率统计自写 Python 模块及命令行入口，固定来源的 `third_party/` 不计入；原生 C++ 和 `build_rosa_sam_cpu_extension.py` 构建配置不计入 Python 行覆盖率。真实多卡通信、CUDA 性能和编译器支持需要在对应环境另行验证。
 
 ## 数据与 checkpoint
 

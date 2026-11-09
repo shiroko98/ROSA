@@ -1,0 +1,322 @@
+[
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-000=V0103. Repeat: ITEM-000=V0103.\nLookup ITEM-000="
+      },
+      {
+        "role": "assistant",
+        "content": "V0103"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-001=V0140. Repeat: ITEM-001=V0140.\nLookup ITEM-001="
+      },
+      {
+        "role": "assistant",
+        "content": "V0140"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-002=V0177. Repeat: ITEM-002=V0177.\nLookup ITEM-002="
+      },
+      {
+        "role": "assistant",
+        "content": "V0177"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-003=V0214. Repeat: ITEM-003=V0214.\nLookup ITEM-003="
+      },
+      {
+        "role": "assistant",
+        "content": "V0214"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-004=V0251. Repeat: ITEM-004=V0251.\nLookup ITEM-004="
+      },
+      {
+        "role": "assistant",
+        "content": "V0251"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-005=V0288. Repeat: ITEM-005=V0288.\nLookup ITEM-005="
+      },
+      {
+        "role": "assistant",
+        "content": "V0288"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-006=V0325. Repeat: ITEM-006=V0325.\nLookup ITEM-006="
+      },
+      {
+        "role": "assistant",
+        "content": "V0325"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-007=V0362. Repeat: ITEM-007=V0362.\nLookup ITEM-007="
+      },
+      {
+        "role": "assistant",
+        "content": "V0362"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-008=V0399. Repeat: ITEM-008=V0399.\nLookup ITEM-008="
+      },
+      {
+        "role": "assistant",
+        "content": "V0399"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-009=V0436. Repeat: ITEM-009=V0436.\nLookup ITEM-009="
+      },
+      {
+        "role": "assistant",
+        "content": "V0436"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-010=V0473. Repeat: ITEM-010=V0473.\nLookup ITEM-010="
+      },
+      {
+        "role": "assistant",
+        "content": "V0473"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-011=V0510. Repeat: ITEM-011=V0510.\nLookup ITEM-011="
+      },
+      {
+        "role": "assistant",
+        "content": "V0510"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-012=V0547. Repeat: ITEM-012=V0547.\nLookup ITEM-012="
+      },
+      {
+        "role": "assistant",
+        "content": "V0547"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-013=V0584. Repeat: ITEM-013=V0584.\nLookup ITEM-013="
+      },
+      {
+        "role": "assistant",
+        "content": "V0584"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-014=V0621. Repeat: ITEM-014=V0621.\nLookup ITEM-014="
+      },
+      {
+        "role": "assistant",
+        "content": "V0621"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-015=V0658. Repeat: ITEM-015=V0658.\nLookup ITEM-015="
+      },
+      {
+        "role": "assistant",
+        "content": "V0658"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-016=V0695. Repeat: ITEM-016=V0695.\nLookup ITEM-016="
+      },
+      {
+        "role": "assistant",
+        "content": "V0695"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-017=V0732. Repeat: ITEM-017=V0732.\nLookup ITEM-017="
+      },
+      {
+        "role": "assistant",
+        "content": "V0732"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-018=V0769. Repeat: ITEM-018=V0769.\nLookup ITEM-018="
+      },
+      {
+        "role": "assistant",
+        "content": "V0769"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Repeat the requested field exactly."
+      },
+      {
+        "role": "user",
+        "content": "Record: ITEM-019=V0806. Repeat: ITEM-019=V0806.\nLookup ITEM-019="
+      },
+      {
+        "role": "assistant",
+        "content": "V0806"
+      }
+    ]
+  }
+]

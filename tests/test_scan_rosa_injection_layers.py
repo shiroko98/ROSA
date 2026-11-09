@@ -12,7 +12,7 @@ class RosaInjectionLayerScanSmokeTests(unittest.TestCase):
             args = parser.parse_args(
                 [
                     "--data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--data_format",
                     "text",
                     "--split_mode",
@@ -76,13 +76,13 @@ class RosaInjectionLayerScanSmokeTests(unittest.TestCase):
             args = parser.parse_args(
                 [
                     "--data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--train_data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--val_data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--test_data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--data_format",
                     "text",
                     "--split_mode",
@@ -158,13 +158,13 @@ class RosaInjectionLayerScanSmokeTests(unittest.TestCase):
             args = parser.parse_args(
                 [
                     "--data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--train_data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--val_data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--test_data_path",
-                    "data/rosa_demo.txt",
+                    str(Path(__file__).resolve().parents[1] / "examples/toy_corpus.txt"),
                     "--data_format",
                     "text",
                     "--split_mode",

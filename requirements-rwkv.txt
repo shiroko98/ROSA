@@ -1,0 +1,14 @@
+# RWKV reference diagnostics AND pinned upstream native SFT training.
+torch>=2.5,<3
+numpy>=1.24,<3
+jinja2>=3.1.6,<4
+ninja>=1.11,<2
+
+# Pinned for reproducible online/offline experiment tracking.
+wandb==0.19.11
+
+# Upstream native train.py / Trainer dependencies.
+pytorch-lightning==1.9.5
+torchmetrics==1.6.3
+deepspeed==0.16.9
+setuptools==80.9.0

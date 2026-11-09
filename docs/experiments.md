@@ -1,4 +1,6 @@
-# 已有实验与比较边界
+# 原有 Transformer 实验与比较边界
+
+新增 RWKV 对照采用独立入口与实验协议，见 [RWKV 实验指南](rwkv_rosa_comparison.md)。本文数字仅属于原有 Transformer 实验，不可用作 RWKV 收益。
 
 以下数字摘自本地保存的 `outputs/<run>/comparison.json`，用于追溯已有小规模实验。原始数据、日志和权重不随 Git 上传。这些实验不是多随机种子统计，也没有证明大模型上的同等收益。
 

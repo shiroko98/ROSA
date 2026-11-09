@@ -1,0 +1,17 @@
+{
+  "data": "examples/rwkv_rosa_toy.json",
+  "out_dir": "outputs/rwkv_rosa_toy",
+  "tokenizer": "byte",
+  "variants": "baseline,original,improved",
+  "device": "cpu",
+  "dtype": "float32",
+  "epochs": 1,
+  "chunk_len": 32,
+  "history_tokens": 64,
+  "batch_size": 2,
+  "inject_layers": "0,1",
+  "sparse_values": true,
+  "value_shards": 4,
+  "activation_checkpointing": true,
+  "verify_online": true
+}
