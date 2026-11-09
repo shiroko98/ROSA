@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 
-# =========================
-# 0. 代理配置
-# =========================
-export SOCKS_PROXY="${SOCKS_PROXY:-socks5://192.168.9.1:7893}"
-export HTTPS_PROXY="${HTTPS_PROXY:-http://192.168.9.1:7893}"
-export HTTP_PROXY="${HTTP_PROXY:-http://192.168.9.1:7893}"
-export ALL_PROXY="${ALL_PROXY:-${SOCKS_PROXY}}"
+# Private settings are optional and never tracked by Git.
+_ROSA_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -f "${_ROSA_PROJECT_ROOT}/env/server.local.sh" ]]; then
+  source "${_ROSA_PROJECT_ROOT}/env/server.local.sh"
+fi
 
+# Proxy settings are opt-in; preserve proxies supplied by the caller.
+export SOCKS_PROXY="${SOCKS_PROXY:-}"
+export HTTPS_PROXY="${HTTPS_PROXY:-${https_proxy:-}}"
+export HTTP_PROXY="${HTTP_PROXY:-${http_proxy:-}}"
+export ALL_PROXY="${ALL_PROXY:-${all_proxy:-${SOCKS_PROXY}}}"
 export https_proxy="${https_proxy:-${HTTPS_PROXY}}"
 export http_proxy="${http_proxy:-${HTTP_PROXY}}"
 export all_proxy="${all_proxy:-${ALL_PROXY}}"
@@ -28,12 +31,12 @@ export FORCE_ENV_UPDATE="${FORCE_ENV_UPDATE:-0}"
 # =========================
 # 2. 数据与模型路径
 # =========================
-export TOKENIZER_NAME_OR_PATH="${TOKENIZER_NAME_OR_PATH:-/mnt/lab/Models/qwen/Qwen3.5-9B}"
-export TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-/mnt/data/Datas/minipile/jsonl/train-*.jsonl}"
-export VAL_DATA_PATH="${VAL_DATA_PATH:-/mnt/data/Datas/minipile/jsonl/validation-00000-of-00001-a2192e61a091cecb.jsonl}"
-export TEST_DATA_PATH="${TEST_DATA_PATH:-/mnt/data/Datas/minipile/jsonl/test-00000-of-00001-010a6231c4b54d31.jsonl}"
-export MEMMAP_OUT_DIR="${MEMMAP_OUT_DIR:-/mnt/data/Codes/RWKV/ROSA/memmap_out}"
-export OUT_DIR="${OUT_DIR:-/mnt/data/Codes/RWKV/ROSA/rosa_runs}"
+export TOKENIZER_NAME_OR_PATH="${TOKENIZER_NAME_OR_PATH:-}"
+export TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-${_ROSA_PROJECT_ROOT}/data/minipile/train-*.jsonl}"
+export VAL_DATA_PATH="${VAL_DATA_PATH:-${_ROSA_PROJECT_ROOT}/data/minipile/validation-*.jsonl}"
+export TEST_DATA_PATH="${TEST_DATA_PATH:-${_ROSA_PROJECT_ROOT}/data/minipile/test-*.jsonl}"
+export MEMMAP_OUT_DIR="${MEMMAP_OUT_DIR:-${_ROSA_PROJECT_ROOT}/memmap_out}"
+export OUT_DIR="${OUT_DIR:-${_ROSA_PROJECT_ROOT}/rosa_runs}"
 export PRETOKENIZED_MANIFEST="${PRETOKENIZED_MANIFEST:-}"
 
 export DATA_FORMAT="${DATA_FORMAT:-jsonl}"

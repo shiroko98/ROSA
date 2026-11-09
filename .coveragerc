@@ -1,0 +1,14 @@
+[run]
+source = .
+omit =
+    tests/*
+    .codex-build/*
+    .tmp/*
+    outputs/*
+    build_rosa_sam_cpu_extension.py
+
+[report]
+precision = 2
+show_missing = True
+skip_empty = True
+fail_under = 95

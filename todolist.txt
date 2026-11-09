@@ -1,0 +1,20 @@
+ROSA 当前任务与状态（2026-11-09）
+
+本轮任务：整理仓库，便于上传已有 GitHub 远程仓库。
+远程：origin / https://github.com/shiroko98/ROSA.git
+
+[已完成] 明确 Transformer baseline 与 RWKV tokenizer 实验的区别。
+[已完成] 历史操作指南、进展和路线图集中到 docs/，保留 Python 兼容入口。
+[已完成] 增加公开 README、最小/开发/可选 tokenizer 依赖和离线示例语料。
+[已完成] 默认代理和个人 tokenizer 路径改为可配置，增加被 Git 忽略的本地配置入口。
+[已完成] VS Code 使用所选解释器，增加离线快速示例；Bash 文件统一 LF。
+[已完成] 134 项单元与回归测试全部通过；Python 总行覆盖率 95.96%（整理前约 60%）。
+[已完成] README 快速示例实跑成功；文档链接、配置格式、忽略规则和上传文件大小已检查。
+[已完成] 配置 Ubuntu / Windows GitHub Actions，并设置 95% Python 总行覆盖率门槛。
+[已完成] 本轮修改随本提交保存到当前分支，保留原有 Git 历史。
+[待完成] 用户自行 push；远程 CI 将在 push 后运行。
+
+详细验证：docs/testing.md。
+研究路线和既有任务：docs/final_todolist.md。
+本地数据和 checkpoint 保留在 data/、outputs/，不随 Git 上传；请单独备份。
+本轮开始前已有 3 个文档删除，保留用户原有状态，不纳入本轮提交。

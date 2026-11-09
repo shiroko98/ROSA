@@ -1,0 +1,4 @@
+# Core training, profiling and memmap dependencies.
+# Pure ROSA byte/RWKV-tokenizer scripts use the Python standard library.
+torch>=2.5,<3
+numpy>=1.24,<3

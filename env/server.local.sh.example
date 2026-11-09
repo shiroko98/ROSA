@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Copy to env/server.local.sh and edit. Existing environment variables win.
+export TOKENIZER_NAME_OR_PATH="${TOKENIZER_NAME_OR_PATH:-/path/to/tokenizer}"
+export TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-/path/to/data/train-*.jsonl}"
+export VAL_DATA_PATH="${VAL_DATA_PATH:-/path/to/data/validation-*.jsonl}"
+export TEST_DATA_PATH="${TEST_DATA_PATH:-/path/to/data/test-*.jsonl}"
+# export PRETOKENIZED_MANIFEST="/path/to/memmap/dataset_manifest.json"
+# export OUT_DIR="/path/to/experiments/rosa"
+# export ENV_NAME="ROSA"
+# export NPROC_PER_NODE=8
+# Optional: set proxies only if your network needs them.
+# export HTTPS_PROXY="http://127.0.0.1:7890"
+# export HTTP_PROXY="${HTTPS_PROXY}"
+# Optional: configure WANDB_API_KEY in your environment, never in Git.

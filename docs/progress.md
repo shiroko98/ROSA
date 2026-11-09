@@ -342,7 +342,7 @@
 - `conda run -n model python -m unittest tests.test_rosa_online_state.RosaAddressEngineTests tests.test_train_qwen_llama_vs_rosa_v2.RosaSequenceAddressModeTests tests.test_train_qwen_llama_vs_rosa_v2.TrainAddressAsyncLoaderTests tests.test_train_qwen_llama_vs_rosa_v2.TrainingTimingTests`
 - `train_qwen_llama_vs_rosa_v2.py ... --disable_rosa_train_address_async --rosa_online_sam_impl stateful --train_timing`
 - `train_qwen_llama_vs_rosa_v2.py ... --disable_rosa_train_address_async --rosa_online_sam_impl fast --train_timing`
-- `D:\\anaconda\\envs\\model\\python.exe -c \"...online_sam_address_meta_with_memory(... implementation='stateful'/'fast')...\"`（纯地址 microbenchmark）
+- `python -c \"...online_sam_address_meta_with_memory(... implementation='stateful'/'fast')...\"`（纯地址 microbenchmark）
 - `conda run -n model python -m unittest tests.test_rosa_recipes tests.test_profile_rosa_online_baseline tests.test_scan_rosa_injection_layers`
 - `train_qwen_llama_vs_rosa_v2.py ... --rosa_recipe online_v2 --rosa_online_sam_impl fast --train_timing`
 - `conda run -n model python -m unittest tests.test_rosa_training_snapshot tests.test_train_qwen_llama_vs_rosa_v2`
