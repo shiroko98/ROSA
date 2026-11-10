@@ -24,7 +24,8 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 def request_from_checkpoint(checkpoint, output, *, length=8192, depths=(.1,.5,.9),
-                            max_new_tokens=24, threads=4, baseline_cache=None, source_run_id=None):
+                            max_new_tokens=24, threads=4, baseline_cache=None, source_run_id=None,
+                            prompt_template='chatml'):
     import torch
     checkpoint=Path(checkpoint).resolve(strict=True);output=Path(output)
     c=torch.load(checkpoint,map_location='cpu',weights_only=False,mmap=True)
@@ -37,12 +38,15 @@ def request_from_checkpoint(checkpoint, output, *, length=8192, depths=(.1,.5,.9
         raise ValueError('Expected compact ROSA-only state_dict.')
     if length<256 or not depths or any(not 0<float(d)<1 for d in depths) or min(max_new_tokens,threads)<=0:
         raise ValueError('Invalid independent needle monitor settings.')
+    if prompt_template not in ('rwkv', 'chatml'):
+        raise ValueError('Unknown needle prompt template.')
     return {'step':int(c['global_step']),'base':base['path'],'backbone_sha256':base['sha256'],
         'backbone_parameter_names':base['parameter_names'],'adapter':str(checkpoint),
         'adapter_format':'native_checkpoint','source_checkpoint':str(checkpoint),
         'source_training_run_id':source_run_id,'position':meta['position'],'output_norm':meta['output_norm'], **scale_options(meta),
         'layers':[int(i) for i in meta['layers'].split(',') if i],'scale':meta['scale'],
         'length':length,'depths':list(depths),'difficulties':['unrelated','similar_archives'],
+        'prompt_template':prompt_template,
         'seed':20261109,'max_new_tokens':max_new_tokens,'threads':threads,
         'baseline_cache':str(baseline_cache or output.parent/'base_cache.json'),
         'result':str(output/'report.json')}
@@ -75,7 +79,8 @@ def upload_result(request_path):
     run=wandb.init(project='ROSA-RWKV7',entity=os.environ.get('WANDB_ENTITY','mobius'),
         id=identity.read_text().strip(),resume='allow',job_type='standalone-needle-evaluation',
         group='needle-of-'+str(r.get('source_training_run_id') or 'unknown'),dir=str(p.parent),
-        config={k:r.get(k) for k in ('step','source_checkpoint','source_training_run_id','position','length','depths','max_new_tokens')})
+        config={k:r.get(k) for k in ('step','source_checkpoint','source_training_run_id','position','length','depths',
+                                   'max_new_tokens','prompt_template','output_norm',*scale_options(r))})
     try:
         metrics={'source_training_step':r['step'],'evaluation_seconds':report.get('wall_seconds',0)}
         for row in report['summary']:
@@ -95,7 +100,8 @@ def evaluate_one(checkpoint, output_root, args):
     source_id=(Path(args.train_dir)/'wandb_run_id.txt') if args.train_dir else None
     request=request_from_checkpoint(checkpoint,folder,length=args.length,depths=args.depths,
         max_new_tokens=args.max_new_tokens,threads=args.threads,
-        baseline_cache=Path(args.train_dir)/'needle/base_cache.json' if args.train_dir else None,
+        baseline_cache=folder.parent/'base_cache.json',
+        prompt_template=getattr(args, 'prompt_template', 'chatml'),
         source_run_id=source_id.read_text().strip() if source_id and source_id.exists() else None)
     path=folder/'request.json';write_json(path,request)
     status={'status':'running','step':step,'checkpoint':str(checkpoint),'started_at':datetime.now().astimezone().isoformat()}
@@ -123,6 +129,7 @@ def main(argv=None):
     p.add_argument('--train-dir');p.add_argument('--checkpoint');p.add_argument('--output')
     p.add_argument('--watch',action='store_true');p.add_argument('--min-step',type=int,default=0)
     p.add_argument('--length',type=int,default=8192);p.add_argument('--depths',default='0.1,0.5,0.9')
+    p.add_argument('--prompt-template', choices=('rwkv', 'chatml'), default='chatml')
     p.add_argument('--max-new-tokens',type=int,default=24);p.add_argument('--threads',type=int,default=4)
     p.add_argument('--timeout',type=int,default=14400);p.add_argument('--poll-seconds',type=float,default=15)
     p.add_argument('--wandb',action='store_true');args=p.parse_args(argv)

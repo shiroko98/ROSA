@@ -35,7 +35,11 @@ GPU 环境请先安装与设备匹配的 PyTorch，再安装其余依赖。服�
 - 明确区分 block 注入与 `post_norm`（最终 norm 后、head 前），checkpoint 保存并校验位置语义。见 [post-norm 说明](docs/rwkv_post_norm_training.md)。
 - 支持独立 GPU 大海捞针评测、RWKV state 和编译 SAM 增量更新；10 条三格式/模型配置快速对比已完成，未观察到旧 step 200 ROSA 相对 base 的提升。见 [stateful 实现与实测](docs/rwkv_gpu_stateful_needle.md)。
 - 新增可选的输出归一化、投影后 RMS 对齐及有界 `logit_gap` 动态 scale；默认旧公式不变。这些功能已经过数值和短跑验证，**不代表已证明质量提升**。见 [动态 scale](docs/rwkv_dynamic_scale.md)、[输出对齐](docs/rwkv_output_alignment.md)。
-- 当前 ROSA 原生训练路径仍限制单卡；上游具有 DeepSpeed 接口不等于本分支已适配 ROSA 多卡或 ZeRO-3 offload。CPU ROSA 执行也不等同于 ZeRO offload。
+- 原生路径支持八卡复制式 DP：密集梯度走 DDP，稀疏 ValueStore 梯度按全局触达行集合平均；不使用 ZeRO。每两小时保存，独立 CPU 评测不阻塞训练。见 [192K DP 训练](docs/rwkv_dp_192k_training.md)。
+
+### ROSA-Relay：当前实现及实验归档
+
+当前 2.9B 本体冻结，ROSA 在最终 norm 后、LM head 前注入，训练上下文为 192512。最终评测使用 step 1800、`logit_gap`、`min_match=6`、`dynamic_max=0.3`；训练已按要求停止。已完成 8K–256K 的短答案和长答案检索，以及 128K 的 GPU / CPU 混合 / 纯 CPU 推理速度对比。数据处理、代码入口、指标口径、结果和检查点位置集中在 [ROSA-Relay 状态与复现说明](docs/rosa_relay_status.md)。与 ROSA-Tuning 论文的区别见 [论文对照](docs/rosa_tuning_paper_comparison_2602_02499.md)。
 
 ## RWKV-7 对照实验（新增）
 
@@ -111,10 +115,11 @@ bash scripts/server/launch_8gpu_ddp_online_v1.sh
 
 ## 测试与覆盖率
 
-最近一次提交前 CPU-only 回归：262 项测试执行，256 项通过、6 项跳过，无失败。当前 Python 行覆盖率 **91.60%，尚未达到 CI 的 95% 门槛**；未降低阈值或排除新增自写 GPU 模块。历史记录及当前验证范围见 [验证记录](docs/testing.md)。GitHub Actions 已配置 Ubuntu / Windows 回归，push 后运行；本地通过不代表远程 CI 或多卡验证已完成。
+最近一次提交前 Linux CPU-only 全仓 pytest 回归：**272 项通过、6 项跳过**，无失败（另有 74 个 subtest 通过），包括真实双进程 DP 同步和续训测试。当前 Python 行覆盖率 **85.45%，尚未达到 CI 的 95% 门槛**；未降低阈值或排除新增自写 GPU 模块。历史记录及当前验证范围见 [验证记录](docs/testing.md)。GitHub Actions 已配置 Ubuntu / Windows 回归，push 后运行；本地通过不代表远程 CI 已完成。
 
 ```bash
 python -m unittest discover -s tests
+python -m pytest tests -q
 python -m coverage run -m unittest discover -s tests
 python -m coverage report
 ```

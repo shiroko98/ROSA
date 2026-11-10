@@ -28,7 +28,8 @@ def run_request(request):
     cases=[]
     for difficulty in r['difficulties']:
         for i,depth in enumerate(r['depths']):
-            cases.append(build_case(tokenizer,r['length'],depth,r['seed']+i*997,difficulty))
+            cases.append(build_case(tokenizer,r['length'],depth,r['seed']+i*997,difficulty,
+                                    prompt_template=r.get('prompt_template', 'chatml')))
     # Base hash and complete token-case hashes key the baseline: never reuse an
     # incompatible base, length, query, seed or decoding rule.
     signature=hashlib.sha256(json.dumps({'backbone_sha256':r['backbone_sha256'],
@@ -47,7 +48,7 @@ def run_request(request):
             results.extend(cached['results']);continue
         if arm=='trained':
             adapter=torch.load(r['adapter'],map_location='cpu',weights_only=r.get('adapter_format')!='native_checkpoint',mmap=True)
-            model.rosa=CPUImprovedROSA(body.emb,tuple(r['layers']),r['scale'],device='cpu',position=r.get('position','block'),output_norm=r.get('output_norm','none'),**scale_options(r))
+            model.rosa=CPUImprovedROSA(body.emb,tuple(r['layers']),r['scale'],device='cpu',address_impl='compiled_cpu',position=r.get('position','block'),output_norm=r.get('output_norm','none'),**scale_options(r))
             if r.get('adapter_format') == 'native_checkpoint':
                 from .position import normalize_metadata
                 meta=normalize_metadata(adapter['native_rosa'])
@@ -77,9 +78,11 @@ def run_request(request):
     for difficulty in r['difficulties']:
         groups.extend([{**x,'difficulty':difficulty} for x in summarize([y for y in results if y['difficulty']==difficulty])])
     report={'status':'complete','step':r['step'],'device':'cpu','dtype':'float32','signature':signature,
-            'position':r.get('position','block'),'output_norm':r.get('output_norm','none'),**scale_options(r),'layers':r['layers'],'length':r['length'],'case_definition':{'depths':r['depths'],'difficulties':r['difficulties'],'seed':r['seed']},
+            'position':r.get('position','block'),'output_norm':r.get('output_norm','none'),**scale_options(r),'layers':r['layers'],'length':r['length'],
+            'prompt_template':r.get('prompt_template', 'chatml'),
+            'case_definition':{'depths':r['depths'],'difficulties':r['difficulties'],'seed':r['seed']},
             'baseline_cache_used':cached is not None,'results':results,'summary':groups,'address_diagnostics':diag,
-            'scope':'Small fixed synthetic CPU FP32 passkey monitor, not native BF16/full-training-context parity or comprehensive NIAH.'}
+            'scope':'Fixed synthetic CPU FP32 passkey generation at the recorded document length; not native BF16 numerical parity or comprehensive NIAH.'}
     write_json(r['result'],report)
     return report
 

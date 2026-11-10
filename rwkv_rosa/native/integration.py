@@ -21,6 +21,8 @@ UPSTREAM_COMMIT = '1d7e87bedffdac9e117bc3e8942dd79b0ee73fd1'
 
 
 def add_arguments(parser):
+    parser.add_argument('--rosa_dp', type=int, choices=(0, 1), default=0,
+                        help='Replicated DDP with synchronized sparse ROSA gradients; no ZeRO.')
     parser.add_argument('--rosa', '--rosa_cpu', dest='rosa_cpu', type=int, default=0)
     parser.add_argument('--rosa_device', choices=('cpu', 'cuda'), default='cpu')
     parser.add_argument('--rosa_address_impl', choices=('fast','compiled_cpu'), default='fast')
@@ -74,8 +76,18 @@ def install(model, args):
         raise ValueError('rosa_checkpoint_seconds must be finite and nonnegative.')
     if (interval or getattr(args, 'rosa_checkpoint_initial', 0)) and not getattr(args, 'rosa_save', 1):
         raise ValueError('Periodic/initial checkpoints require rosa_save=1.')
-    if int(args.devices) != 1 or int(args.num_nodes) != 1 or 'deepspeed' in str(args.strategy):
-        raise ValueError('CPU ROSA currently supports native single-GPU strategy only, not DeepSpeed/DDP.')
+    dp = bool(getattr(args, 'rosa_dp', 0))
+    if dp:
+        if args.rosa_device != 'cuda' or str(args.strategy) != 'ddp' or int(args.devices) < 2:
+            raise ValueError('ROSA DP requires --rosa_device cuda --strategy ddp --devices >=2.')
+        if getattr(args, 'rosa_needle_every_eval', 0):
+            raise ValueError('DP requires an independent needle worker, not synchronous needle evaluation.')
+        torch.cuda.set_device(int(os.environ.get('LOCAL_RANK', 0)))
+        # MyDataset already partitions physical rows by global rank. Lightning
+        # must not apply another DistributedSampler to these logical indices.
+        args.replace_sampler_ddp = False
+    elif int(args.devices) != 1 or int(args.num_nodes) != 1 or 'deepspeed' in str(args.strategy):
+        raise ValueError('Multi-GPU ROSA requires --rosa_dp 1 with CUDA DDP; DeepSpeed is unsupported.')
     if args.precision != 'bf16':
         raise ValueError('Native fused x070 kernels require --precision bf16; no silent reference fallback.')
     if not args.load_model or args.train_stage != 0 or args.load_partial:
@@ -108,6 +120,8 @@ def install(model, args):
     args.precision = 32
     args.rosa_precision_policy = 'bf16_backbone_fp32_rosa_no_outer_amp'
     args.run_name += f' ROSA-{args.rosa_device}'
+    if os.environ.get('ROSA_RUN_LABEL'):
+        args.run_name += ' ' + os.environ['ROSA_RUN_LABEL']
     os.environ['WANDB_DIR'] = args.proj_dir
     # Both placements use FP32 ROSA arithmetic (no TF32), while native kernels
     # retain their required BF16 execution. This avoids a precision confound.
@@ -184,7 +198,10 @@ class NativeROSACallback(pl.Callback):
         """
         folder = self.out / "checkpoints"
         folder.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        primary = getattr(trainer, 'is_global_zero', True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") if primary else None
+        if getattr(self.args, 'rosa_dp', 0):
+            stamp = trainer.strategy.broadcast(stamp)
         path = folder / f"native-{reason}-step{trainer.global_step:09d}-{stamp}.ckpt"
         temporary = path.with_suffix(".ckpt.tmp")
         progress = getattr(getattr(getattr(trainer, "fit_loop", None), "epoch_loop", None), "batch_progress", None)
@@ -197,27 +214,33 @@ class NativeROSACallback(pl.Callback):
         start = time.monotonic()
         try:
             trainer.save_checkpoint(str(temporary))
-            temporary.replace(path)
+            if primary:
+                temporary.replace(path)
         finally:
             for tracker, completed in snapshot:
                 tracker.completed = completed
         # Relative symlink is valid if the entire run directory is moved. Never
         # overwrite an old hourly file through the latest symlink.
-        link = self.out / "native-last.ckpt.tmp"
-        link.unlink(missing_ok=True)
-        link.symlink_to(path.relative_to(self.out))
-        link.replace(self.out / "native-last.ckpt")
-        record = {"step": trainer.global_step, "reason": reason, "path": str(path),
-                  "utc": stamp, "bytes": path.stat().st_size,
-                  "save_seconds": time.monotonic() - start}
-        with (self.out / "native_checkpoints.jsonl").open("a") as stream:
-            stream.write(json.dumps(record) + "\n")
+        if primary:
+            link = self.out / "native-last.ckpt.tmp"
+            link.unlink(missing_ok=True)
+            link.symlink_to(path.relative_to(self.out))
+            link.replace(self.out / "native-last.ckpt")
+            record = {"step": trainer.global_step, "reason": reason, "path": str(path),
+                      "utc": stamp, "bytes": path.stat().st_size,
+                      "save_seconds": time.monotonic() - start}
+            with (self.out / "native_checkpoints.jsonl").open("a") as stream:
+                stream.write(json.dumps(record) + "\n")
+            print("NATIVE ROSA CHECKPOINT:", json.dumps(record), flush=True)
+        if getattr(self.args, 'rosa_dp', 0):
+            trainer.strategy.barrier()
         self.last_checkpoint_time = time.monotonic()
         self.last_saved_step = trainer.global_step
-        print("NATIVE ROSA CHECKPOINT:", json.dumps(record), flush=True)
         return path
 
     def write(self, name, value):
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+            return
         p = self.out / name
         temp = p.with_suffix(p.suffix + '.tmp')
         temp.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + '\n')
@@ -231,6 +254,8 @@ class NativeROSACallback(pl.Callback):
         checkpoint['native_rosa_data_policy'] = {'virtual_windows': int(getattr(self.args, 'rosa_windowed_data', 0)),
                                                   'micro_bsz': int(getattr(self.args, 'micro_bsz', 1)),
                                                   'accumulate_grad_batches': int(getattr(self.args, 'accumulate_grad_batches', 1))}
+        if getattr(self.args, 'rosa_dp', 0):
+            checkpoint['native_rosa_data_policy']['world_size'] = trainer.world_size
         if getattr(self.args, 'rosa_checkpoint_adapter_only', 0):
             checkpoint['native_rosa_checkpoint_kind'] = 'adapter_optimizer_loop_with_external_base_v1'
             checkpoint['native_rosa_frozen_base'] = {'path': self.args.load_model,
@@ -246,6 +271,8 @@ class NativeROSACallback(pl.Callback):
         policy = {'virtual_windows': int(getattr(self.args, 'rosa_windowed_data', 0)),
                   'micro_bsz': int(getattr(self.args, 'micro_bsz', 1)),
                   'accumulate_grad_batches': int(getattr(self.args, 'accumulate_grad_batches', 1))}
+        if getattr(self.args, 'rosa_dp', 0):
+            policy['world_size'] = int(self.args.devices) * int(self.args.num_nodes)
         if 'native_rosa_data_policy' in checkpoint and checkpoint['native_rosa_data_policy'] != policy:
             raise ValueError('Native ROSA window/batch/accumulation policy changed on resume.')
         if 'native_rosa' not in checkpoint:
@@ -287,10 +314,13 @@ class NativeROSACallback(pl.Callback):
                       'rosa_values_sha256_before': parameter_hash(model.rosa_cpu.rosa_value_store),
                       'base_checkpoint': self.args.load_model, 'ctx_len': self.args.ctx_len, 'torch': torch.__version__, 'cuda': torch.version.cuda,
                       'precision_policy': self.args.rosa_precision_policy,
+                      'world_size': trainer.world_size,
+                      'parallelism': 'replicated_ddp_sparse_row_union' if getattr(self.args, 'rosa_dp', 0) else 'single_device',
                       'precision_note': 'native BF16 CUDA execution without outer AMP; FP32 ROSA; no reference/streaming equivalence claim'}
         model._rosa_frozen_sha256 = self.audit['backbone_sha256_before']
         self.write('native_audit.json', self.audit)
-        print('NATIVE ROSA AUDIT:', json.dumps(self.audit), flush=True)
+        if trainer.is_global_zero:
+            print('NATIVE ROSA AUDIT:', json.dumps(self.audit), flush=True)
         if getattr(self.args, 'rosa_eval_initial', 0):
             for callback in trainer.callbacks:
                 if hasattr(callback, '_run_sft_eval'):
@@ -352,21 +382,37 @@ class NativeROSACallback(pl.Callback):
             # its value table changed; observe later nonzero updates below.
             self.audit.update(rosa_values_changed=changed, optimizer_states_device=self.args.rosa_device,
                               backbone_gradients_absent=True)
+            if getattr(self.args, 'rosa_dp', 0):
+                rank_audits = [None] * trainer.world_size
+                torch.distributed.all_gather_object(rank_audits, {
+                    'rank': trainer.global_rank, 'device': str(model.rosa_cpu.gate_bias.device),
+                    'adapter_sha256': parameter_hash(model.rosa_cpu), 'batch_sha256': self.batch_hash})
+                if len({row['adapter_sha256'] for row in rank_audits}) != 1:
+                    raise AssertionError('DP adapter parameters differ across ranks after the first optimizer update.')
+                if len({row['batch_sha256'] for row in rank_audits}) != trainer.world_size:
+                    raise AssertionError('DP first-update input batches overlap across ranks.')
+                self.audit.update(first_update_rank_audits=rank_audits, dp_parameters_identical=True,
+                                  dp_initial_batches_distinct=True)
             self.write('native_audit.json', self.audit)
         if not self.audit.get('rosa_values_changed') and metrics['grad_norm'] > 0:
             changed = parameter_hash(model.rosa_cpu.rosa_value_store) != self.audit['rosa_values_sha256_before']
             if changed:
                 self.audit.update(rosa_values_changed=True, rosa_values_first_observed_update=trainer.global_step)
                 self.write('native_audit.json', self.audit)
-        with (self.out / 'native_steps.jsonl').open('a') as stream:
-            stream.write(json.dumps(metrics, allow_nan=False) + '\n')
+        if trainer.is_global_zero:
+            with (self.out / 'native_steps.jsonl').open('a') as stream:
+                stream.write(json.dumps(metrics, allow_nan=False) + '\n')
         if getattr(trainer, 'my_wandb', None) is not None:
             trainer.my_wandb.log({f'native/{k}': v for k, v in metrics.items() if isinstance(v, (float, int))}, step=trainer.global_step)
-        print('NATIVE ROSA STEP:', json.dumps(metrics), flush=True)
+        if trainer.is_global_zero:
+            print('NATIVE ROSA STEP:', json.dumps(metrics), flush=True)
         self.last_step = trainer.global_step
         self.started = None
         self.maybe_save_checkpoint(trainer)
-        if (self.out / 'STOP').exists():
+        stop = (self.out / 'STOP').exists()
+        if getattr(self.args, 'rosa_dp', 0):
+            stop = trainer.strategy.broadcast(stop if trainer.is_global_zero else None)
+        if stop:
             if self.args.rosa_save and self.last_saved_step != trainer.global_step:
                 self.save_full_checkpoint(trainer, 'user-stop')
             trainer.should_stop = True
@@ -376,6 +422,8 @@ class NativeROSACallback(pl.Callback):
         initial = getattr(self.args, 'rosa_checkpoint_initial', 0) and not self.initial_checkpoint_saved
         interval = getattr(self.args, 'rosa_checkpoint_seconds', 0.)
         due = interval > 0 and time.monotonic() - self.last_checkpoint_time >= interval
+        if getattr(self.args, 'rosa_dp', 0):
+            initial, due = trainer.strategy.broadcast((initial, due) if trainer.is_global_zero else None)
         if initial or due:
             self.save_full_checkpoint(trainer, 'initial' if initial else 'hourly')
             self.initial_checkpoint_saved = True
@@ -395,8 +443,11 @@ class NativeROSACallback(pl.Callback):
             trainer.my_wandb.finish()
 
     def on_exception(self, trainer, model, exception):
-        self.write('native_failure.json', {'type': type(exception).__name__, 'message': str(exception),
+        name = f'native_failure_rank{trainer.global_rank}.json' if getattr(self.args, 'rosa_dp', 0) else 'native_failure.json'
+        # Failures from any rank remain observable even if rank zero is in a collective.
+        value = {'type': type(exception).__name__, 'message': str(exception),
                                          'global_step': trainer.global_step,
-                                         'peak_gpu_allocated_GiB': torch.cuda.max_memory_allocated() / 2**30})
+                                         'peak_gpu_allocated_GiB': torch.cuda.max_memory_allocated() / 2**30}
+        (self.out / name).write_text(json.dumps(value, indent=2) + '\n')
         if getattr(trainer, 'my_wandb', None) is not None:
             trainer.my_wandb.finish(exit_code=1)

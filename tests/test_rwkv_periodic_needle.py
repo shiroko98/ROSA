@@ -54,7 +54,7 @@ class PeriodicNeedleTest(unittest.TestCase):
                 'difficulties':['unrelated','similar_archives'],'max_new_tokens':2,'baseline_cache':str(tmp/'base_cache.json'),
                 'result':str(tmp/'result.json'),'layers':[1],'scale':.05,'backbone_sha256':state_hash(dict(b.state_dict())), 'backbone_parameter_names':list(b.state_dict())}
             path=tmp/'request.json';path.write_text(json.dumps(request))
-            def case(tok,length,depth,seed,difficulty):return {'id':difficulty,'difficulty':difficulty,'length':length,'depth':depth,'stem_ids':[1,2,1,2],'secret':'123456'}
+            def case(tok,length,depth,seed,difficulty,prompt_template='chatml'):return {'id':difficulty,'difficulty':difficulty,'length':length,'depth':depth,'stem_ids':[1,2,1,2],'secret':'123456','prompt_template':prompt_template}
             def evaluate(*args):return {'passkey_match':False,'strict_digits_only':False,'answer_nll':1.,'first_answer_token_rank':2}
             def patches():
                 from contextlib import ExitStack

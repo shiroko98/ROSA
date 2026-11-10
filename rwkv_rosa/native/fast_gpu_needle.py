@@ -21,6 +21,27 @@ from third_party.rwkv_lm_v7.tokenizer import TRIE_TOKENIZER
 ROOT=Path(__file__).resolve().parents[2]
 
 
+def select_token(logits, *, temperature=0., top_p=1., top_k=0, generator=None):
+    """Greedy or temperature/top-k/nucleus sampling, without changing logits."""
+    import math
+    if not math.isfinite(temperature) or temperature < 0 or not 0 < top_p <= 1 or top_k < 0:
+        raise ValueError('Invalid sampling temperature, top_p, or top_k')
+    if temperature == 0:
+        return int(logits.argmax())
+    scores = logits.float() / temperature
+    if top_k:
+        cutoff = scores.topk(min(top_k, scores.numel())).values[-1]
+        scores = scores.masked_fill(scores < cutoff, -torch.inf)
+    if top_p < 1:
+        ordered, indices = scores.sort(descending=True)
+        probability = ordered.softmax(-1)
+        # Retain the token crossing the threshold, and always the strongest.
+        remove = probability.cumsum(-1) - probability >= top_p
+        scores = scores.clone()
+        scores[indices[remove]] = -torch.inf
+    return int(torch.multinomial(scores.softmax(-1), 1, generator=generator))
+
+
 def ten_cases(tokenizer,length,seed,template):
     for i,depth in enumerate((.1,.3,.5,.7,.9)):
         for j,mode in enumerate(('qa','exact_prefix')):
@@ -44,23 +65,29 @@ class FastEvaluator:
                 'trained':body.head(trained).float()[0,-1]},trained-hidden
 
     @torch.inference_mode()
-    def evaluate(self,case,mode,arms,max_tokens,heartbeat=None):
+    def evaluate(self,case,mode,arms,max_tokens,heartbeat=None,*,sampling=None,observer=None):
+        sampling = sampling or {'temperature':0., 'top_p':1., 'top_k':0, 'seed':0}
         prompt=case['stem_ids']+case['suffix_ids'][mode]
         torch.cuda.synchronize();began=time.perf_counter()
         hidden,prompt_state=self.runtime.features(torch.tensor([prompt],device='cuda'))
         last=hidden[:,-1:].clone();del hidden
         sam=IncrementalAddress();sam.prefill(prompt)
         logits,delta=self.logits(last,sam.last)
+        if observer:
+            observer('prompt',0,sam.last,dict(self.model.adapter.stats))
         torch.cuda.synchronize();prefill_seconds=time.perf_counter()-began
         first={a:logits[a].clone() for a in arms};state={a:prompt_state for a in arms}
         # These state tensors are immutable inputs. Native kernel allocates new
         # states, so the two arms can safely share prompt state before branching.
         sams={a:sam.clone() for a in arms};generated={a:[] for a in arms};done=set()
+        generators={a:torch.Generator(device='cuda').manual_seed(int(sampling.get('seed',0))) for a in arms}
         calls=0;decode_seconds=0.;generated_steps=0
         for step in range(max_tokens):
             for arm in arms:
                 if arm in done:continue
-                token=int(logits[arm].argmax());generated[arm].append(token)
+                token=select_token(logits[arm],temperature=sampling.get('temperature',0.),
+                    top_p=sampling.get('top_p',1.),top_k=sampling.get('top_k',0),generator=generators[arm])
+                generated[arm].append(token)
                 if token in STOPS:done.add(arm)
             if len(done)==len(arms) or step+1==max_tokens:break
             # Share only when the full generated prefix is equal, never merely
@@ -79,6 +106,8 @@ class FastEvaluator:
                     else:
                         self.model.adapter.addresses=address
                         logits[arm]=self.model.body.head(self.model.adapter.inject_post_norm(h)).float()[0,-1]
+                        if observer:
+                            observer('generation',len(generated[arm]),address,dict(self.model.adapter.stats))
                 torch.cuda.synchronize();decode_seconds+=time.perf_counter()-start
             generated_steps=step+1
             if heartbeat:heartbeat(step+1)
@@ -111,6 +140,7 @@ class FastEvaluator:
                 'single_token_forward_calls_paired':calls,'decode_seconds_per_call':decode_seconds/max(1,calls),
                 'rwkv_state_MiB_per_arm':state_nbytes(prompt_state)/2**20,
                 'full_context_prefill_calls':1,'incremental_decode':True,'incremental_sam':True}
+            row['sampling'] = dict(sampling)
             if arm=='trained':
                 # Recompute prompt logits only from saved final prompt vector;
                 # do not replay the full history for these diagnostics.

@@ -13,7 +13,8 @@ ROSA-specific changes (complete diff in UPSTREAM_PATCH.diff; source hashes in
 UPSTREAM_FILES.json):
 
 - `train.py`: add extension arguments and install the ROSA callback after strict
-  checkpoint loading; retain native Trainer creation and `trainer.fit`.
+  checkpoint loading; select replicated DDP and sparse-gradient synchronization
+  when explicitly enabled; retain native Trainer creation and `trainer.fit`.
 - `src/model.py`: call ROSA once per forward and inject its differentiable residual
   before configured blocks; use PyTorch reentrant block checkpointing for the
   single-GPU ROSA path instead of requiring a distributed DeepSpeed engine;
@@ -46,3 +47,8 @@ the first trainable injection (frozen no-grad prefix); optional explicit virtual
 windows on native physical-row splits; invoke the CPU passkey monitor after each
 native SFT eval. Original native kernels/loss/scheduler/Trainer remain in use.
 All windowing and monitoring implementation stays in rwkv_rosa/native/.
+
+2026-11-10 DP extension: native Trainer accepts an opt-in ROSA DDP strategy and
+sparse-gradient callback. Sparse-row reduction, rank coordination, checkpoint
+publication and independent monitoring remain in rwkv_rosa/native/; no ZeRO
+dependency or model/optimizer partitioning is introduced.

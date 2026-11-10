@@ -171,7 +171,7 @@ class NativeROSA(unittest.TestCase):
             model = SimpleNamespace(rosa_cpu=branch, emb=SimpleNamespace(weight=fake_body),
                                     named_parameters=lambda: iter(named), parameters=lambda: (p for _,p in named))
             optimizer = CPUROSAOptimizer(branch, lr=1e-3)
-            trainer = SimpleNamespace(global_step=0, optimizers=[optimizer], my_loss=1., my_wandb=Mock(),
+            trainer = SimpleNamespace(global_step=0, world_size=1, is_global_zero=True, optimizers=[optimizer], my_loss=1., my_wandb=Mock(),
                                       save_checkpoint=Mock())
             callback = NativeROSACallback(args)
             args.rosa_eval_initial=1; trainer.callbacks=[Mock()]

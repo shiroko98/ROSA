@@ -676,9 +676,12 @@ if __name__ == "__main__":  # pragma: no cover
 
     # ROSA extension only: keep the native Trainer, dataset, SFT loss and kernels.
     rosa_callback = install(model, args)
+    from rwkv_rosa.native.data_parallel import trainer_strategy, SparseGradientSync
     trainer = Trainer.from_argparse_args(
         args,
-        callbacks=[train_callback(args, eval_loader=eval_loader)] + ([rosa_callback] if rosa_callback else []),
+        strategy=trainer_strategy(args),
+        callbacks=([SparseGradientSync()] if getattr(args, 'rosa_dp', 0) else [])
+                  + [train_callback(args, eval_loader=eval_loader)] + ([rosa_callback] if rosa_callback else []),
     )
 
     if trainer.global_rank == 0:

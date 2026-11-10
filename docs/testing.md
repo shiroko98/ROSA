@@ -1,5 +1,17 @@
 # 测试与验证
 
+## ROSA-Relay 整理提交前验证：2026-11-10
+
+- Linux，conda `rwkv-lm-v7`，隐藏 CUDA 的全仓 pytest 回归：**272 项通过、6 项跳过**，无失败；另有 74 个 subtest 通过。总耗时约 67 秒。
+- 命令：`CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 WANDB_MODE=disabled python -m coverage run -m pytest tests -q`。
+- pytest 会运行 unittest 用例，也会运行新增函数式 DP / 数据重处理测试；仅使用 `unittest discover` 不会发现这些函数式测试。开发依赖已包含 pytest。
+- 包括真实双进程 Lightning / Gloo 稀疏行同步、加权全局 batch oracle、梯度累积和 bitwise 续训；普通 RWKV 文本格式、编译 tokenizer、mask / EOS / 打包 / 重建恢复；CPU 编译 WKV 的参考数值和递归状态；长短答案评分及采样规则。
+- 全仓回归发现的旧 callback 测试替身缺少 `is_global_zero` 字段，已修复并纳入上述复跑。CUDA 专项在本轮 CPU-only 回归中跳过；既有八卡训练实测记录另见 DP 文档。
+- Python 行覆盖率 **85.45%**，**未达到现有 95% 门槛**；coverage report 因门槛退出码为 2。未降低阈值，也未把新增训练或评测代码排除；远程 CI 的覆盖率检查预计仍会失败。
+- 三个绘图脚本从已完成实验的 summary 在临时目录重新生成 PNG 成功。报告脚本的源码快照清单均指向仓库内存在的正式文件，不再依赖忽略的 `outputs/` 下临时脚本。
+- 改动 Python 的 AST、Bash 的 `bash -n`、`git diff --check` 均通过；43 个 vendored 原生源文件哈希全部匹配，`train.py` 对上游的补丁已同步更新。
+- 本次只整理代码、文档并运行回归，训练保持停止；数据、模型、实验日志和编译产物不进入 Git。最终配置、检查点和数据归档见 [ROSA-Relay 状态](rosa_relay_status.md)。
+
 ## RWKV 原生集成提交前验证：2026-11-09
 
 - Linux，conda `rosa-rwkv`，隐藏 CUDA 执行全仓回归：262 项执行，256 项通过、6 项跳过，无失败。

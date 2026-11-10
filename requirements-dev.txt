@@ -1,5 +1,6 @@
 -r requirements.txt
 coverage>=7.6,<8
+pytest>=8,<9
 ninja>=1.11,<2
 jinja2>=3.1.6,<4
 

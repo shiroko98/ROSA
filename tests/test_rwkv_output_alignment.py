@@ -84,7 +84,7 @@ class OutputAlignmentTest(unittest.TestCase):
             callback.started=time.perf_counter()-1;callback.mask_tokens=8.;callback.batch_hash='batch'
             branch=SimpleNamespace(scale_mode='logit_gap',rosa_value_store=nn.Embedding(8,2),stats={})
             model=SimpleNamespace(rosa_cpu=branch)
-            trainer=SimpleNamespace(global_step=1,my_grad_norm=0.,my_loss=1.,optimizers=[SimpleNamespace(assert_states_device=Mock())])
+            trainer=SimpleNamespace(global_step=1,is_global_zero=True,my_grad_norm=0.,my_loss=1.,optimizers=[SimpleNamespace(assert_states_device=Mock())])
             with patch('torch.cuda.synchronize'),patch('torch.cuda.max_memory_allocated',return_value=0), \
                  patch('torch.cuda.max_memory_reserved',return_value=0), \
                  patch('rwkv_rosa.native.integration.frozen_hash',return_value='same'), \

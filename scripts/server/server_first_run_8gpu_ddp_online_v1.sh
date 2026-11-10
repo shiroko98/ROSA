@@ -7,8 +7,8 @@ source "${SCRIPT_DIR}/server_env.sh"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 echo "[ROSA] repo: ${ROOT_DIR}"
-echo "[ROSA] step 1/3: install environment"
-bash "${SCRIPT_DIR}/install_model_env_server.sh"
+# echo "[ROSA] step 1/3: install environment"
+# bash "${SCRIPT_DIR}/install_model_env_server.sh"
 
 echo "[ROSA] step 2/3: prepare memmap dataset if needed"
 bash "${SCRIPT_DIR}/prepare_memmap_dataset.sh"

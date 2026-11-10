@@ -104,11 +104,11 @@ export ENABLE_BF16="${ENABLE_BF16:-1}"
 # =========================
 # 6. wandb 监控
 # =========================
-export ENABLE_WANDB="${ENABLE_WANDB:-0}"
+export ENABLE_WANDB="${ENABLE_WANDB:-1}"
 export WANDB_PROJECT="${WANDB_PROJECT:-ROSA}"
 export WANDB_ENTITY="${WANDB_ENTITY:-}"
-export WANDB_RUN_NAME="${WANDB_RUN_NAME:-}"
-export WANDB_GROUP="${WANDB_GROUP:-}"
+export WANDB_RUN_NAME="${WANDB_RUN_NAME:-online_v2_capacity_baseline}"
+export WANDB_GROUP="${WANDB_GROUP:-online_v2_capacity_baseline}"
 export WANDB_TAGS="${WANDB_TAGS:-}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 export WANDB_SAVE_DIR="${WANDB_SAVE_DIR:-}"
